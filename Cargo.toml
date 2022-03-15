@@ -1,10 +1,10 @@
 [package]
 name = "mmledger"
-version = "0.1.1"
+version = "0.1.2"
 license = "Apache-2.0"
 homepage = "https://github.com/jarkkojs/mmledger"
 repository = "https://github.com/jarkkojs/mmledger"
-description = "Ledger for shims to track mm-calls"
+description = "A ledger for confidential computing (CC) shims for tracking memory management system calls"
 edition = "2021"
 include = [
     "**/*.rs",
@@ -14,4 +14,3 @@ include = [
 [dependencies]
 bitflags = "1.0.4"
 heapless = "0.7.10"
-libc = "0.2.71"
