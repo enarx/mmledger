@@ -177,13 +177,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn insert_memory_area() {
+    fn mmap() {
         let mut m: MemoryMap<1> = MemoryMap::default();
         m.commit_mmap(0x1000, 0x1000, Permissions::READ);
     }
 
     #[test]
-    fn insert_memory_area_adjacent() {
+    fn mmap_is_adjacent() {
         let mut m: MemoryMap<1> = MemoryMap::default();
         m.commit_mmap(0x1000, 0x1000, Permissions::READ);
         match m.can_mmap(0x2000, 0x1000, Permissions::READ) {
@@ -193,7 +193,7 @@ mod tests {
     }
 
     #[test]
-    fn insert_memory_area_overflow() {
+    fn mmap_overflow() {
         let mut m: MemoryMap<1> = MemoryMap::default();
         m.commit_mmap(0x1000, 0x1000, Permissions::READ);
         match m.can_mmap(0x4000, 0x1000, Permissions::READ) {
