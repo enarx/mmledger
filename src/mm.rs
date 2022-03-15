@@ -193,6 +193,26 @@ mod tests {
     }
 
     #[test]
+    fn mmap_intersects() {
+        let mut m: MemoryMap<1> = MemoryMap::default();
+        m.commit_mmap(0x1000, 0x3000, Permissions::READ);
+        match m.can_mmap(0x2000, 0x3000, Permissions::READ) {
+            Err(MemoryMapError::InvalidInput) => (),
+            _ => panic!("no overflow"),
+        }
+    }
+
+    #[test]
+    fn mmap_contains() {
+        let mut m: MemoryMap<1> = MemoryMap::default();
+        m.commit_mmap(0x1000, 0x3000, Permissions::READ);
+        match m.can_mmap(0x2000, 0x1000, Permissions::READ) {
+            Err(MemoryMapError::InvalidInput) => (),
+            _ => panic!("no overflow"),
+        }
+    }
+
+    #[test]
     fn mmap_overflow() {
         let mut m: MemoryMap<1> = MemoryMap::default();
         m.commit_mmap(0x1000, 0x1000, Permissions::READ);
