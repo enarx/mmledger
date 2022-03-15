@@ -66,7 +66,7 @@ impl MemoryArea {
     }
 }
 
-impl PartialEq for MemoryArea  {
+impl PartialEq for MemoryArea {
     fn eq(&self, other: &Self) -> bool {
         self.addr == other.addr && self.size == other.size
     }
@@ -196,6 +196,28 @@ mod tests {
 
         let mut m: MemoryMap<1> = MemoryMap::default();
         m.commit_mmap(A, PAGE_SIZE, Permissions::READ);
+    }
+
+    #[test]
+    fn memory_area_eq() {
+        const A: Ref = unsafe { Ref::new_unchecked(4096 as *mut c_void) };
+        const B: Ref = unsafe { Ref::new_unchecked(4096 as *mut c_void) };
+
+        assert_eq!(
+            MemoryArea::new(A, PAGE_SIZE, Permissions::READ),
+            MemoryArea::new(B, PAGE_SIZE, Permissions::READ),
+        );
+    }
+
+    #[test]
+    fn memory_area_neq() {
+        const A: Ref = unsafe { Ref::new_unchecked(4096 as *mut c_void) };
+        const B: Ref = unsafe { Ref::new_unchecked(8192 as *mut c_void) };
+
+        assert!(
+            MemoryArea::new(A, PAGE_SIZE, Permissions::READ)
+                != MemoryArea::new(B, PAGE_SIZE, Permissions::READ)
+        );
     }
 
     #[test]
