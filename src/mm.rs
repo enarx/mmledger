@@ -20,7 +20,7 @@ bitflags::bitflags! {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Eq)]
 #[repr(C, align(32))]
 pub struct MemoryArea {
     addr: Ref,
@@ -63,6 +63,12 @@ impl MemoryArea {
     #[inline]
     pub fn is_adjacent(&self, other: MemoryArea) -> bool {
         self.end() == other.addr || other.end() == self.addr
+    }
+}
+
+impl PartialEq for MemoryArea  {
+    fn eq(&self, other: &Self) -> bool {
+        self.addr == other.addr && self.size == other.size
     }
 }
 
