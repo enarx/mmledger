@@ -191,14 +191,6 @@ mod tests {
     const PAGE_SIZE: usize = 4096;
 
     #[test]
-    fn mmap() {
-        const A: Ref = unsafe { Ref::new_unchecked(4096 as *mut c_void) };
-
-        let mut m: MemoryMap<1> = MemoryMap::default();
-        m.commit_mmap(A, PAGE_SIZE, Permissions::READ);
-    }
-
-    #[test]
     fn memory_area_eq() {
         const A: Ref = unsafe { Ref::new_unchecked(4096 as *mut c_void) };
         const B: Ref = unsafe { Ref::new_unchecked(4096 as *mut c_void) };
@@ -218,6 +210,14 @@ mod tests {
             MemoryArea::new(A, PAGE_SIZE, Permissions::READ)
                 != MemoryArea::new(B, PAGE_SIZE, Permissions::READ)
         );
+    }
+
+    #[test]
+    fn mmap() {
+        const A: Ref = unsafe { Ref::new_unchecked(4096 as *mut c_void) };
+
+        let mut m: MemoryMap<1> = MemoryMap::default();
+        m.commit_mmap(A, PAGE_SIZE, Permissions::READ);
     }
 
     #[test]
