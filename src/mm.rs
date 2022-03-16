@@ -1,6 +1,5 @@
 //! A ledger for mm-calls.
-
-use core::cmp::min;
+use core::cmp::{min, Ordering};
 use core::ffi::c_void;
 use core::ptr::NonNull;
 use heapless::FnvIndexMap;
@@ -29,7 +28,8 @@ pub struct MemoryArea {
     padding: usize,
 }
 
-/// A virtual memory area (VMA) descriptor.
+/// A virtual memory area (VMA) descriptor. Equality and ordering are defined by
+/// the start address of a VMA.
 impl MemoryArea {
     #[inline]
     pub fn new(addr: Ref, size: usize, permissions: Permissions) -> Self {
@@ -68,7 +68,19 @@ impl MemoryArea {
 
 impl PartialEq for MemoryArea {
     fn eq(&self, other: &Self) -> bool {
-        self.addr == other.addr && self.size == other.size
+        self.addr == other.addr
+    }
+}
+
+impl Ord for MemoryArea {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.addr.cmp(&other.addr)
+    }
+}
+
+impl PartialOrd for MemoryArea {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
     }
 }
 
@@ -191,7 +203,7 @@ mod tests {
     const PAGE_SIZE: usize = 4096;
 
     #[test]
-    fn memory_area_eq() {
+    fn memory_area_equal() {
         const A: Ref = unsafe { Ref::new_unchecked(4096 as *mut c_void) };
         const B: Ref = unsafe { Ref::new_unchecked(4096 as *mut c_void) };
 
@@ -202,13 +214,35 @@ mod tests {
     }
 
     #[test]
-    fn memory_area_neq() {
+    fn memory_area_not_equal() {
         const A: Ref = unsafe { Ref::new_unchecked(4096 as *mut c_void) };
         const B: Ref = unsafe { Ref::new_unchecked(8192 as *mut c_void) };
 
         assert!(
             MemoryArea::new(A, PAGE_SIZE, Permissions::READ)
                 != MemoryArea::new(B, PAGE_SIZE, Permissions::READ)
+        );
+    }
+
+    #[test]
+    fn memory_area_less_than() {
+        const A: Ref = unsafe { Ref::new_unchecked(4096 as *mut c_void) };
+        const B: Ref = unsafe { Ref::new_unchecked(8192 as *mut c_void) };
+
+        assert!(
+            MemoryArea::new(A, PAGE_SIZE, Permissions::READ)
+                < MemoryArea::new(B, PAGE_SIZE, Permissions::READ)
+        );
+    }
+
+    #[test]
+    fn memory_area_not_less_than() {
+        const A: Ref = unsafe { Ref::new_unchecked(8192 as *mut c_void) };
+        const B: Ref = unsafe { Ref::new_unchecked(4096 as *mut c_void) };
+
+        assert!(
+            !(MemoryArea::new(A, PAGE_SIZE, Permissions::READ)
+                < MemoryArea::new(B, PAGE_SIZE, Permissions::READ))
         );
     }
 
