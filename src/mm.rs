@@ -237,8 +237,13 @@ mod tests {
         const A: Ref = unsafe { Ref::new_unchecked(4096 as *mut c_void) };
 
         let mut m: MemoryMap<1> = MemoryMap::default();
-        m.mmap(A, PAGE_SIZE, Permissions::READ, MmapFlags::empty())
-            .unwrap();
+
+        let area = match m.mmap(A, PAGE_SIZE, Permissions::READ, MmapFlags::empty()) {
+            Ok(area) => area,
+            _ => panic!("mmap"),
+        };
+
+        assert_eq!(area, MemoryArea::new(A, PAGE_SIZE, Permissions::READ));
     }
 
     #[test]
