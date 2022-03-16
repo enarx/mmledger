@@ -121,7 +121,7 @@ impl<const N: usize> MemoryMap<N> {
         size: usize,
         permissions: Permissions,
         flags: MmapFlags,
-    ) -> Result<(), CanMapError> {
+    ) -> Result<MemoryArea, CanMapError> {
         // A microarchitecture constraint in SGX.
         if (permissions & Permissions::READ) != Permissions::READ {
             return Err(CanMapError::InvalidPermissions);
@@ -157,7 +157,7 @@ impl<const N: usize> MemoryMap<N> {
         }
 
         if flags.contains(MmapFlags::DRY_RUN) {
-            return Ok(());
+            return Ok(area);
         }
 
         // Remove adjacent memory areas, and update address and len of the
@@ -178,7 +178,7 @@ impl<const N: usize> MemoryMap<N> {
             _ => panic!(),
         }
 
-        Ok(())
+        Ok(area)
     }
 }
 
@@ -289,7 +289,7 @@ mod tests {
         m.mmap(A, PAGE_SIZE, Permissions::READ, MmapFlags::empty())
             .unwrap();
         match m.mmap(B, PAGE_SIZE, Permissions::READ, MmapFlags::DRY_RUN) {
-            Ok(()) => (),
+            Ok(_) => (),
             _ => panic!("no success"),
         }
     }
