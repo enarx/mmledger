@@ -102,22 +102,34 @@ pub enum CanMapError {
     OutOfCapacity,
 }
 
+bitflags::bitflags! {
+    /// Flags for mmap
+    #[repr(transparent)]
+    pub struct MmapFlags: usize {
+        /// Do not commit mmap
+        const DRY_RUN = 1 << 0;
+    }
+}
+
 impl<const N: usize> MemoryMap<N> {
     /// Check that the given memory area is disjoint and there is enough space
-    /// in the ledger, and the permissions are legit.
-    pub fn can_mmap(
-        &self,
+    /// in the ledger, and the permissions are legit. Add memory area to the
+    /// database. Only disjoint areas are allowed.
+    pub fn mmap(
+        &mut self,
         addr: Ref,
         size: usize,
         permissions: Permissions,
+        flags: MmapFlags,
     ) -> Result<(), CanMapError> {
-        let area = MemoryArea::new(addr, size, permissions);
-        let mut adj_count: usize = 0;
-
         // A microarchitecture constraint in SGX.
         if (permissions & Permissions::READ) != Permissions::READ {
             return Err(CanMapError::InvalidPermissions);
         }
+
+        let mut area = MemoryArea::new(addr, size, permissions);
+        let mut adj_table: [(usize, usize); 2] = [(0, 0); 2];
+        let mut adj_count: usize = 0;
 
         // OOM check can be done only after finding out how many adjacent
         // memory areas the memory map contains.
@@ -130,10 +142,10 @@ impl<const N: usize> MemoryMap<N> {
                 return Err(CanMapError::UnsupportedIntersection);
             }
 
-            // Count adjacent memory areas, which have the same permissionsection
-            // bits (at most two).
+            // Collect adjacent memory areas, which have the same permissions.
             if old.is_adjacent(area) && old.permissions == area.permissions {
                 assert!(adj_count < 2);
+                adj_table[adj_count] = (old.addr.as_ptr() as usize, old.size);
                 adj_count += 1;
             }
         }
@@ -144,36 +156,9 @@ impl<const N: usize> MemoryMap<N> {
             return Err(CanMapError::OutOfCapacity);
         }
 
-        Ok(())
-    }
-
-    /// Add memory area to the database. Only disjoint areas are allowed.
-    pub fn commit_mmap(&mut self, addr: Ref, size: usize, permissions: Permissions) {
-        assert_eq!(permissions & Permissions::READ, Permissions::READ);
-
-        let mut area = MemoryArea::new(addr, size, permissions);
-        let mut adj_table: [(usize, usize); 2] = [(0, 0); 2];
-        let mut adj_count: usize = 0;
-
-        // OOM check can be done only after finding out how many adjacent
-        // memory areas the memory map contains.
-        assert!(self.mm.len() <= N);
-
-        for (_, old) in self.mm.iter_mut() {
-            let old = old.unwrap();
-
-            assert!(!old.intersects(area));
-
-            // Collect adjacent memory areas, which have the same permissions.
-            if old.is_adjacent(area) && old.permissions == area.permissions {
-                assert!(adj_count < 2);
-                adj_table[adj_count] = (old.addr.as_ptr() as usize, old.size);
-                adj_count += 1;
-            }
+        if flags.contains(MmapFlags::DRY_RUN) {
+            return Ok(());
         }
-
-        assert!(self.mm.len() >= adj_count);
-        assert_ne!(self.mm.len() - adj_count, N);
 
         // Remove adjacent memory areas, and update address and len of the
         // new area.
@@ -190,9 +175,10 @@ impl<const N: usize> MemoryMap<N> {
 
         match self.mm.insert(area.addr.as_ptr() as usize, Some(area)) {
             Ok(None) => (),
-            // This should never happen if the algorithm works correctly.
             _ => panic!(),
         }
+
+        Ok(())
     }
 }
 
@@ -251,15 +237,16 @@ mod tests {
         const A: Ref = unsafe { Ref::new_unchecked(4096 as *mut c_void) };
 
         let mut m: MemoryMap<1> = MemoryMap::default();
-        m.commit_mmap(A, PAGE_SIZE, Permissions::READ);
+        m.mmap(A, PAGE_SIZE, Permissions::READ, MmapFlags::empty())
+            .unwrap();
     }
 
     #[test]
     fn mmap_no_permissions() {
         const A: Ref = unsafe { Ref::new_unchecked(4096 as *mut c_void) };
 
-        let m: MemoryMap<1> = MemoryMap::default();
-        match m.can_mmap(A, PAGE_SIZE, Permissions::empty()) {
+        let mut m: MemoryMap<1> = MemoryMap::default();
+        match m.mmap(A, PAGE_SIZE, Permissions::empty(), MmapFlags::DRY_RUN) {
             Err(CanMapError::InvalidPermissions) => (),
             _ => panic!("no intersects"),
         }
@@ -271,8 +258,9 @@ mod tests {
         const B: Ref = unsafe { Ref::new_unchecked(16384 as *mut c_void) };
 
         let mut m: MemoryMap<1> = MemoryMap::default();
-        m.commit_mmap(A, PAGE_SIZE, Permissions::READ);
-        match m.can_mmap(B, PAGE_SIZE, Permissions::READ) {
+        m.mmap(A, PAGE_SIZE, Permissions::READ, MmapFlags::empty())
+            .unwrap();
+        match m.mmap(B, PAGE_SIZE, Permissions::READ, MmapFlags::DRY_RUN) {
             Err(CanMapError::OutOfCapacity) => (),
             _ => panic!("no overflow"),
         }
@@ -284,8 +272,9 @@ mod tests {
         const B: Ref = unsafe { Ref::new_unchecked(4096 as *mut c_void) };
 
         let mut m: MemoryMap<2> = MemoryMap::default();
-        m.commit_mmap(A, PAGE_SIZE, Permissions::READ);
-        match m.can_mmap(B, PAGE_SIZE, Permissions::READ) {
+        m.mmap(A, PAGE_SIZE, Permissions::READ, MmapFlags::empty())
+            .unwrap();
+        match m.mmap(B, PAGE_SIZE, Permissions::READ, MmapFlags::DRY_RUN) {
             Err(CanMapError::UnsupportedIntersection) => (),
             _ => panic!("no intersects"),
         }
@@ -297,8 +286,9 @@ mod tests {
         const B: Ref = unsafe { Ref::new_unchecked(8192 as *mut c_void) };
 
         let mut m: MemoryMap<2> = MemoryMap::default();
-        m.commit_mmap(A, PAGE_SIZE, Permissions::READ);
-        match m.can_mmap(B, PAGE_SIZE, Permissions::READ) {
+        m.mmap(A, PAGE_SIZE, Permissions::READ, MmapFlags::empty())
+            .unwrap();
+        match m.mmap(B, PAGE_SIZE, Permissions::READ, MmapFlags::DRY_RUN) {
             Ok(()) => (),
             _ => panic!("no success"),
         }
