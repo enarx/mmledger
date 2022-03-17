@@ -156,10 +156,6 @@ impl<const N: usize> MemoryMap<N> {
             return Err(CanMapError::OutOfCapacity);
         }
 
-        if flags.contains(MmapFlags::DRY_RUN) {
-            return Ok(area);
-        }
-
         // Remove adjacent memory areas, and update address and len of the
         // new area.
         for (adj_addr, adj_size) in adj_table {
@@ -167,15 +163,19 @@ impl<const N: usize> MemoryMap<N> {
                 break;
             }
 
-            self.mm.remove(&adj_addr);
+            if !flags.contains(MmapFlags::DRY_RUN) {
+                self.mm.remove(&adj_addr);
+            }
 
             area.addr = min(area.addr, Ref::new(adj_addr as *mut c_void).unwrap());
             area.size += adj_size;
         }
 
-        match self.mm.insert(area.addr.as_ptr() as usize, Some(area)) {
-            Ok(None) => (),
-            _ => panic!(),
+        if !flags.contains(MmapFlags::DRY_RUN) {
+            match self.mm.insert(area.addr.as_ptr() as usize, Some(area)) {
+                Ok(None) => (),
+                _ => panic!(),
+            }
         }
 
         Ok(area)
@@ -286,16 +286,20 @@ mod tests {
     }
 
     #[test]
-    fn mmap_is_adjacent() {
+    fn mmap_adjacent() {
         const A: Ref = unsafe { Ref::new_unchecked(4096 as *mut c_void) };
         const B: Ref = unsafe { Ref::new_unchecked(8192 as *mut c_void) };
 
         let mut m: MemoryMap<2> = MemoryMap::default();
+
         m.mmap(A, PAGE_SIZE, Permissions::READ, MmapFlags::empty())
             .unwrap();
-        match m.mmap(B, PAGE_SIZE, Permissions::READ, MmapFlags::DRY_RUN) {
-            Ok(_) => (),
+
+        let area = match m.mmap(B, PAGE_SIZE, Permissions::READ, MmapFlags::DRY_RUN) {
+            Ok(area) => area,
             _ => panic!("no success"),
-        }
+        };
+
+        assert_eq!(area, MemoryArea::new(A, 2 * PAGE_SIZE, Permissions::READ));
     }
 }
