@@ -97,7 +97,7 @@ pub enum MmapError {
     InvalidPermissions,
     /// Two VMA's are have an intersection not supported in the current version
     /// of mmledger.
-    UnsupportedIntersection,
+    InvalidIntersection,
     /// Out of storage capacity to do commit_mmap().
     OutOfCapacity,
 }
@@ -139,7 +139,7 @@ impl<const N: usize> MemoryMap<N> {
             let old = old.unwrap();
 
             if old.intersects(area) {
-                return Err(MmapError::UnsupportedIntersection);
+                return Err(MmapError::InvalidIntersection);
             }
 
             // Collect adjacent memory areas, which have the same permissions.
@@ -280,7 +280,7 @@ mod tests {
         m.insert_area(A, PAGE_SIZE, Permissions::READ, InsertAreaFlags::empty())
             .unwrap();
         match m.insert_area(B, PAGE_SIZE, Permissions::READ, InsertAreaFlags::DRY_RUN) {
-            Err(MmapError::UnsupportedIntersection) => (),
+            Err(MmapError::InvalidIntersection) => (),
             _ => panic!("no intersects"),
         }
     }
