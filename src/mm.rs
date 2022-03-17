@@ -23,7 +23,7 @@ bitflags::bitflags! {
 #[repr(C, align(32))]
 pub struct MemoryArea {
     address: Address,
-    size: usize,
+    length: usize,
     permissions: Permissions,
     padding: usize,
 }
@@ -32,10 +32,10 @@ pub struct MemoryArea {
 /// the start address of a VMA.
 impl MemoryArea {
     #[inline]
-    pub fn new(address: Address, size: usize, permissions: Permissions) -> Self {
+    pub fn new(address: Address, length: usize, permissions: Permissions) -> Self {
         Self {
             address,
-            size,
+            length,
             permissions,
             padding: 0,
         }
@@ -50,7 +50,7 @@ impl MemoryArea {
     /// Return end address of the area.
     #[inline]
     pub fn end(&self) -> Address {
-        let end_ptr = (self.address.as_ptr() as usize + self.size) as *mut c_void;
+        let end_ptr = (self.address.as_ptr() as usize + self.length) as *mut c_void;
 
         if let Some(end_ptr) = NonNull::new(end_ptr) {
             end_ptr
@@ -149,7 +149,7 @@ impl<const N: usize> MemoryMap<N> {
             // Collect adjacent memory areas, which have the same permissions.
             if old.is_adjacent(result) && old.permissions == result.permissions {
                 assert!(adj_count < 2);
-                adj_table[adj_count] = (old.address.as_ptr() as usize, old.size);
+                adj_table[adj_count] = (old.address.as_ptr() as usize, old.length);
                 adj_count += 1;
             }
         }
@@ -162,7 +162,7 @@ impl<const N: usize> MemoryMap<N> {
 
         // Remove adjacent memory areas, and update address and len of the
         // new area.
-        for (adj_addr, adj_size) in adj_table {
+        for (adj_addr, adj_length) in adj_table {
             if adj_addr == 0 {
                 break;
             }
@@ -175,7 +175,7 @@ impl<const N: usize> MemoryMap<N> {
                 result.address,
                 Address::new(adj_addr as *mut c_void).unwrap(),
             );
-            result.size += adj_size;
+            result.length += adj_length;
         }
 
         if !flags.contains(InsertFlags::DRY_RUN) {
