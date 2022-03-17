@@ -105,7 +105,7 @@ pub enum MmapError {
 bitflags::bitflags! {
     /// Flags for mmap
     #[repr(transparent)]
-    pub struct MmapFlags: usize {
+    pub struct InsertMmapFlags: usize {
         /// Do not commit mmap
         const DRY_RUN = 1 << 0;
     }
@@ -115,12 +115,12 @@ impl<const N: usize> MemoryMap<N> {
     /// Check that the given memory area is disjoint and there is enough space
     /// in the ledger, and the permissions are legit. Add memory area to the
     /// database. Only disjoint areas are allowed.
-    pub fn mmap(
+    pub fn insert_mmap(
         &mut self,
         addr: Ref,
         size: usize,
         permissions: Permissions,
-        flags: MmapFlags,
+        flags: InsertMmapFlags,
     ) -> Result<MemoryArea, MmapError> {
         // A microarchitecture constraint in SGX.
         if (permissions & Permissions::READ) != Permissions::READ {
@@ -163,7 +163,7 @@ impl<const N: usize> MemoryMap<N> {
                 break;
             }
 
-            if !flags.contains(MmapFlags::DRY_RUN) {
+            if !flags.contains(InsertMmapFlags::DRY_RUN) {
                 self.mm.remove(&adj_addr);
             }
 
@@ -171,7 +171,7 @@ impl<const N: usize> MemoryMap<N> {
             area.size += adj_size;
         }
 
-        if !flags.contains(MmapFlags::DRY_RUN) {
+        if !flags.contains(InsertMmapFlags::DRY_RUN) {
             match self.mm.insert(area.addr.as_ptr() as usize, Some(area)) {
                 Ok(None) => (),
                 _ => panic!(),
@@ -233,12 +233,12 @@ mod tests {
     }
 
     #[test]
-    fn mmap() {
+    fn insert_mmap() {
         const A: Ref = unsafe { Ref::new_unchecked(4096 as *mut c_void) };
 
         let mut m: MemoryMap<1> = MemoryMap::default();
 
-        let area = match m.mmap(A, PAGE_SIZE, Permissions::READ, MmapFlags::empty()) {
+        let area = match m.insert_mmap(A, PAGE_SIZE, Permissions::READ, InsertMmapFlags::empty()) {
             Ok(area) => area,
             _ => panic!("mmap"),
         };
@@ -247,55 +247,55 @@ mod tests {
     }
 
     #[test]
-    fn mmap_no_permissions() {
+    fn insert_mmap_no_permissions() {
         const A: Ref = unsafe { Ref::new_unchecked(4096 as *mut c_void) };
 
         let mut m: MemoryMap<1> = MemoryMap::default();
-        match m.mmap(A, PAGE_SIZE, Permissions::empty(), MmapFlags::DRY_RUN) {
+        match m.insert_mmap(A, PAGE_SIZE, Permissions::empty(), InsertMmapFlags::DRY_RUN) {
             Err(MmapError::InvalidPermissions) => (),
             _ => panic!("no intersects"),
         }
     }
 
     #[test]
-    fn mmap_overflow() {
+    fn insert_mmap_overflow() {
         const A: Ref = unsafe { Ref::new_unchecked(4096 as *mut c_void) };
         const B: Ref = unsafe { Ref::new_unchecked(16384 as *mut c_void) };
 
         let mut m: MemoryMap<1> = MemoryMap::default();
-        m.mmap(A, PAGE_SIZE, Permissions::READ, MmapFlags::empty())
+        m.insert_mmap(A, PAGE_SIZE, Permissions::READ, InsertMmapFlags::empty())
             .unwrap();
-        match m.mmap(B, PAGE_SIZE, Permissions::READ, MmapFlags::DRY_RUN) {
+        match m.insert_mmap(B, PAGE_SIZE, Permissions::READ, InsertMmapFlags::DRY_RUN) {
             Err(MmapError::OutOfCapacity) => (),
             _ => panic!("no overflow"),
         }
     }
 
     #[test]
-    fn mmap_intersects() {
+    fn insert_mmap_intersects() {
         const A: Ref = unsafe { Ref::new_unchecked(4096 as *mut c_void) };
         const B: Ref = unsafe { Ref::new_unchecked(4096 as *mut c_void) };
 
         let mut m: MemoryMap<2> = MemoryMap::default();
-        m.mmap(A, PAGE_SIZE, Permissions::READ, MmapFlags::empty())
+        m.insert_mmap(A, PAGE_SIZE, Permissions::READ, InsertMmapFlags::empty())
             .unwrap();
-        match m.mmap(B, PAGE_SIZE, Permissions::READ, MmapFlags::DRY_RUN) {
+        match m.insert_mmap(B, PAGE_SIZE, Permissions::READ, InsertMmapFlags::DRY_RUN) {
             Err(MmapError::UnsupportedIntersection) => (),
             _ => panic!("no intersects"),
         }
     }
 
     #[test]
-    fn mmap_adjacent() {
+    fn insert_mmap_adjacent() {
         const A: Ref = unsafe { Ref::new_unchecked(4096 as *mut c_void) };
         const B: Ref = unsafe { Ref::new_unchecked(8192 as *mut c_void) };
 
         let mut m: MemoryMap<2> = MemoryMap::default();
 
-        m.mmap(A, PAGE_SIZE, Permissions::READ, MmapFlags::empty())
+        m.insert_mmap(A, PAGE_SIZE, Permissions::READ, InsertMmapFlags::empty())
             .unwrap();
 
-        let area = match m.mmap(B, PAGE_SIZE, Permissions::READ, MmapFlags::DRY_RUN) {
+        let area = match m.insert_mmap(B, PAGE_SIZE, Permissions::READ, InsertMmapFlags::DRY_RUN) {
             Ok(area) => area,
             _ => panic!("no success"),
         };
