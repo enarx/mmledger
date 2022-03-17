@@ -98,7 +98,7 @@ pub struct MemoryMap<const N: usize> {
 
 /// Error codes for mmap(), mprotect() and brk() handlers
 #[derive(Debug)]
-pub enum MmapError {
+pub enum InsertError {
     /// The permission mask was not supported
     InvalidPermissions,
     /// Two VMA's are have an intersection not supported in the current version
@@ -125,10 +125,10 @@ impl<const N: usize> MemoryMap<N> {
         &mut self,
         area: MemoryArea,
         flags: InsertFlags,
-    ) -> Result<MemoryArea, MmapError> {
+    ) -> Result<MemoryArea, InsertError> {
         // A microarchitecture constraint in SGX.
         if (area.permissions() & Permissions::READ) != Permissions::READ {
-            return Err(MmapError::InvalidPermissions);
+            return Err(InsertError::InvalidPermissions);
         }
 
         let mut result = area;
@@ -143,7 +143,7 @@ impl<const N: usize> MemoryMap<N> {
             let old = old.unwrap();
 
             if old.intersects(result) {
-                return Err(MmapError::InvalidIntersection);
+                return Err(InsertError::InvalidIntersection);
             }
 
             // Collect adjacent memory areas, which have the same permissions.
@@ -157,7 +157,7 @@ impl<const N: usize> MemoryMap<N> {
         assert!(self.mm.len() >= adj_count);
 
         if (self.mm.len() - adj_count) == N {
-            return Err(MmapError::OutOfCapacity);
+            return Err(InsertError::OutOfCapacity);
         }
 
         // Remove adjacent memory areas, and update address and len of the
@@ -265,7 +265,7 @@ mod tests {
         let area = MemoryArea::new(A, PAGE_SIZE, Permissions::empty());
 
         match m.insert(area, InsertFlags::DRY_RUN) {
-            Err(MmapError::InvalidPermissions) => (),
+            Err(InsertError::InvalidPermissions) => (),
             _ => panic!("no intersects"),
         }
     }
@@ -281,7 +281,7 @@ mod tests {
 
         m.insert(area_a, InsertFlags::empty()).unwrap();
         match m.insert(area_b, InsertFlags::DRY_RUN) {
-            Err(MmapError::OutOfCapacity) => (),
+            Err(InsertError::OutOfCapacity) => (),
             _ => panic!("no overflow"),
         }
     }
@@ -297,7 +297,7 @@ mod tests {
 
         m.insert(area_a, InsertFlags::empty()).unwrap();
         match m.insert(area_b, InsertFlags::DRY_RUN) {
-            Err(MmapError::InvalidIntersection) => (),
+            Err(InsertError::InvalidIntersection) => (),
             _ => panic!("no intersects"),
         }
     }
