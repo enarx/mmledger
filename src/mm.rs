@@ -41,6 +41,12 @@ impl MemoryArea {
         }
     }
 
+    /// Return area permissions.
+    #[inline]
+    pub fn permissions(&self) -> Permissions {
+        self.permissions
+    }
+
     /// Return end address of the area.
     #[inline]
     pub fn end(&self) -> Address {
@@ -117,17 +123,15 @@ impl<const N: usize> MemoryMap<N> {
     /// database. Only disjoint areas are allowed.
     pub fn insert_area(
         &mut self,
-        addr: Address,
-        size: usize,
-        permissions: Permissions,
+        area: MemoryArea,
         flags: InsertAreaFlags,
     ) -> Result<MemoryArea, MmapError> {
         // A microarchitecture constraint in SGX.
-        if (permissions & Permissions::READ) != Permissions::READ {
+        if (area.permissions() & Permissions::READ) != Permissions::READ {
             return Err(MmapError::InvalidPermissions);
         }
 
-        let mut area = MemoryArea::new(addr, size, permissions);
+        let mut result = area;
         let mut adj_table: [(usize, usize); 2] = [(0, 0); 2];
         let mut adj_count: usize = 0;
 
@@ -138,12 +142,12 @@ impl<const N: usize> MemoryMap<N> {
         for (_, old) in self.mm.iter() {
             let old = old.unwrap();
 
-            if old.intersects(area) {
+            if old.intersects(result) {
                 return Err(MmapError::InvalidIntersection);
             }
 
             // Collect adjacent memory areas, which have the same permissions.
-            if old.is_adjacent(area) && old.permissions == area.permissions {
+            if old.is_adjacent(result) && old.permissions == result.permissions {
                 assert!(adj_count < 2);
                 adj_table[adj_count] = (old.address.as_ptr() as usize, old.size);
                 adj_count += 1;
@@ -167,18 +171,24 @@ impl<const N: usize> MemoryMap<N> {
                 self.mm.remove(&adj_addr);
             }
 
-            area.address = min(area.address, Address::new(adj_addr as *mut c_void).unwrap());
-            area.size += adj_size;
+            result.address = min(
+                result.address,
+                Address::new(adj_addr as *mut c_void).unwrap(),
+            );
+            result.size += adj_size;
         }
 
         if !flags.contains(InsertAreaFlags::DRY_RUN) {
-            match self.mm.insert(area.address.as_ptr() as usize, Some(area)) {
+            match self
+                .mm
+                .insert(result.address.as_ptr() as usize, Some(result))
+            {
                 Ok(None) => (),
                 _ => panic!(),
             }
         }
 
-        Ok(area)
+        Ok(result)
     }
 }
 
@@ -237,8 +247,9 @@ mod tests {
         const A: Address = unsafe { Address::new_unchecked(4096 as *mut c_void) };
 
         let mut m: MemoryMap<1> = MemoryMap::default();
+        let area = MemoryArea::new(A, PAGE_SIZE, Permissions::READ);
 
-        let area = match m.insert_area(A, PAGE_SIZE, Permissions::READ, InsertAreaFlags::empty()) {
+        let area = match m.insert_area(area, InsertAreaFlags::empty()) {
             Ok(area) => area,
             _ => panic!("mmap"),
         };
@@ -251,7 +262,9 @@ mod tests {
         const A: Address = unsafe { Address::new_unchecked(4096 as *mut c_void) };
 
         let mut m: MemoryMap<1> = MemoryMap::default();
-        match m.insert_area(A, PAGE_SIZE, Permissions::empty(), InsertAreaFlags::DRY_RUN) {
+        let area = MemoryArea::new(A, PAGE_SIZE, Permissions::empty());
+
+        match m.insert_area(area, InsertAreaFlags::DRY_RUN) {
             Err(MmapError::InvalidPermissions) => (),
             _ => panic!("no intersects"),
         }
@@ -263,9 +276,11 @@ mod tests {
         const B: Address = unsafe { Address::new_unchecked(16384 as *mut c_void) };
 
         let mut m: MemoryMap<1> = MemoryMap::default();
-        m.insert_area(A, PAGE_SIZE, Permissions::READ, InsertAreaFlags::empty())
-            .unwrap();
-        match m.insert_area(B, PAGE_SIZE, Permissions::READ, InsertAreaFlags::DRY_RUN) {
+        let area_a = MemoryArea::new(A, PAGE_SIZE, Permissions::READ);
+        let area_b = MemoryArea::new(B, PAGE_SIZE, Permissions::READ);
+
+        m.insert_area(area_a, InsertAreaFlags::empty()).unwrap();
+        match m.insert_area(area_b, InsertAreaFlags::DRY_RUN) {
             Err(MmapError::OutOfCapacity) => (),
             _ => panic!("no overflow"),
         }
@@ -277,9 +292,11 @@ mod tests {
         const B: Address = unsafe { Address::new_unchecked(4096 as *mut c_void) };
 
         let mut m: MemoryMap<2> = MemoryMap::default();
-        m.insert_area(A, PAGE_SIZE, Permissions::READ, InsertAreaFlags::empty())
-            .unwrap();
-        match m.insert_area(B, PAGE_SIZE, Permissions::READ, InsertAreaFlags::DRY_RUN) {
+        let area_a = MemoryArea::new(A, PAGE_SIZE, Permissions::READ);
+        let area_b = MemoryArea::new(B, PAGE_SIZE, Permissions::READ);
+
+        m.insert_area(area_a, InsertAreaFlags::empty()).unwrap();
+        match m.insert_area(area_b, InsertAreaFlags::DRY_RUN) {
             Err(MmapError::InvalidIntersection) => (),
             _ => panic!("no intersects"),
         }
@@ -291,11 +308,12 @@ mod tests {
         const B: Address = unsafe { Address::new_unchecked(8192 as *mut c_void) };
 
         let mut m: MemoryMap<2> = MemoryMap::default();
+        let area_a = MemoryArea::new(A, PAGE_SIZE, Permissions::READ);
+        let area_b = MemoryArea::new(B, PAGE_SIZE, Permissions::READ);
 
-        m.insert_area(A, PAGE_SIZE, Permissions::READ, InsertAreaFlags::empty())
-            .unwrap();
+        m.insert_area(area_a, InsertAreaFlags::empty()).unwrap();
 
-        let area = match m.insert_area(B, PAGE_SIZE, Permissions::READ, InsertAreaFlags::DRY_RUN) {
+        let area = match m.insert_area(area_b, InsertAreaFlags::DRY_RUN) {
             Ok(area) => area,
             _ => panic!("no success"),
         };
