@@ -4,7 +4,7 @@ use core::ffi::c_void;
 use core::ptr::NonNull;
 use heapless::FnvIndexMap;
 
-type Ref = NonNull<c_void>;
+type Address = NonNull<c_void>;
 
 bitflags::bitflags! {
     /// Page permissions
@@ -22,7 +22,7 @@ bitflags::bitflags! {
 #[derive(Clone, Copy, Debug, Eq)]
 #[repr(C, align(32))]
 pub struct MemoryArea {
-    addr: Ref,
+    address: Address,
     size: usize,
     permissions: Permissions,
     padding: usize,
@@ -32,9 +32,9 @@ pub struct MemoryArea {
 /// the start address of a VMA.
 impl MemoryArea {
     #[inline]
-    pub fn new(addr: Ref, size: usize, permissions: Permissions) -> Self {
+    pub fn new(address: Address, size: usize, permissions: Permissions) -> Self {
         Self {
-            addr,
+            address,
             size,
             permissions,
             padding: 0,
@@ -43,8 +43,8 @@ impl MemoryArea {
 
     /// Return end address of the area.
     #[inline]
-    pub fn end(&self) -> Ref {
-        let end_ptr = (self.addr.as_ptr() as usize + self.size) as *mut c_void;
+    pub fn end(&self) -> Address {
+        let end_ptr = (self.address.as_ptr() as usize + self.size) as *mut c_void;
 
         if let Some(end_ptr) = NonNull::new(end_ptr) {
             end_ptr
@@ -56,25 +56,25 @@ impl MemoryArea {
     /// Check if the given area intersects with this.
     #[inline]
     pub fn intersects(&self, other: MemoryArea) -> bool {
-        !(self.addr >= other.end() || other.addr >= self.end())
+        !(self.address >= other.end() || other.address >= self.end())
     }
 
     /// Check if the given area is adjacent to this.
     #[inline]
     pub fn is_adjacent(&self, other: MemoryArea) -> bool {
-        self.end() == other.addr || other.end() == self.addr
+        self.end() == other.address || other.end() == self.address
     }
 }
 
 impl PartialEq for MemoryArea {
     fn eq(&self, other: &Self) -> bool {
-        self.addr == other.addr
+        self.address == other.address
     }
 }
 
 impl Ord for MemoryArea {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.addr.cmp(&other.addr)
+        self.address.cmp(&other.address)
     }
 }
 
@@ -117,7 +117,7 @@ impl<const N: usize> MemoryMap<N> {
     /// database. Only disjoint areas are allowed.
     pub fn insert_area(
         &mut self,
-        addr: Ref,
+        addr: Address,
         size: usize,
         permissions: Permissions,
         flags: InsertAreaFlags,
@@ -145,7 +145,7 @@ impl<const N: usize> MemoryMap<N> {
             // Collect adjacent memory areas, which have the same permissions.
             if old.is_adjacent(area) && old.permissions == area.permissions {
                 assert!(adj_count < 2);
-                adj_table[adj_count] = (old.addr.as_ptr() as usize, old.size);
+                adj_table[adj_count] = (old.address.as_ptr() as usize, old.size);
                 adj_count += 1;
             }
         }
@@ -167,12 +167,12 @@ impl<const N: usize> MemoryMap<N> {
                 self.mm.remove(&adj_addr);
             }
 
-            area.addr = min(area.addr, Ref::new(adj_addr as *mut c_void).unwrap());
+            area.address = min(area.address, Address::new(adj_addr as *mut c_void).unwrap());
             area.size += adj_size;
         }
 
         if !flags.contains(InsertAreaFlags::DRY_RUN) {
-            match self.mm.insert(area.addr.as_ptr() as usize, Some(area)) {
+            match self.mm.insert(area.address.as_ptr() as usize, Some(area)) {
                 Ok(None) => (),
                 _ => panic!(),
             }
@@ -190,8 +190,8 @@ mod tests {
 
     #[test]
     fn memory_area_equal() {
-        const A: Ref = unsafe { Ref::new_unchecked(4096 as *mut c_void) };
-        const B: Ref = unsafe { Ref::new_unchecked(4096 as *mut c_void) };
+        const A: Address = unsafe { Address::new_unchecked(4096 as *mut c_void) };
+        const B: Address = unsafe { Address::new_unchecked(4096 as *mut c_void) };
 
         assert_eq!(
             MemoryArea::new(A, PAGE_SIZE, Permissions::READ),
@@ -201,8 +201,8 @@ mod tests {
 
     #[test]
     fn memory_area_not_equal() {
-        const A: Ref = unsafe { Ref::new_unchecked(4096 as *mut c_void) };
-        const B: Ref = unsafe { Ref::new_unchecked(8192 as *mut c_void) };
+        const A: Address = unsafe { Address::new_unchecked(4096 as *mut c_void) };
+        const B: Address = unsafe { Address::new_unchecked(8192 as *mut c_void) };
 
         assert!(
             MemoryArea::new(A, PAGE_SIZE, Permissions::READ)
@@ -212,8 +212,8 @@ mod tests {
 
     #[test]
     fn memory_area_less_than() {
-        const A: Ref = unsafe { Ref::new_unchecked(4096 as *mut c_void) };
-        const B: Ref = unsafe { Ref::new_unchecked(8192 as *mut c_void) };
+        const A: Address = unsafe { Address::new_unchecked(4096 as *mut c_void) };
+        const B: Address = unsafe { Address::new_unchecked(8192 as *mut c_void) };
 
         assert!(
             MemoryArea::new(A, PAGE_SIZE, Permissions::READ)
@@ -223,8 +223,8 @@ mod tests {
 
     #[test]
     fn memory_area_not_less_than() {
-        const A: Ref = unsafe { Ref::new_unchecked(8192 as *mut c_void) };
-        const B: Ref = unsafe { Ref::new_unchecked(4096 as *mut c_void) };
+        const A: Address = unsafe { Address::new_unchecked(8192 as *mut c_void) };
+        const B: Address = unsafe { Address::new_unchecked(4096 as *mut c_void) };
 
         assert!(
             !(MemoryArea::new(A, PAGE_SIZE, Permissions::READ)
@@ -234,7 +234,7 @@ mod tests {
 
     #[test]
     fn insert_area() {
-        const A: Ref = unsafe { Ref::new_unchecked(4096 as *mut c_void) };
+        const A: Address = unsafe { Address::new_unchecked(4096 as *mut c_void) };
 
         let mut m: MemoryMap<1> = MemoryMap::default();
 
@@ -248,7 +248,7 @@ mod tests {
 
     #[test]
     fn insert_area_no_permissions() {
-        const A: Ref = unsafe { Ref::new_unchecked(4096 as *mut c_void) };
+        const A: Address = unsafe { Address::new_unchecked(4096 as *mut c_void) };
 
         let mut m: MemoryMap<1> = MemoryMap::default();
         match m.insert_area(A, PAGE_SIZE, Permissions::empty(), InsertAreaFlags::DRY_RUN) {
@@ -259,8 +259,8 @@ mod tests {
 
     #[test]
     fn insert_area_overflow() {
-        const A: Ref = unsafe { Ref::new_unchecked(4096 as *mut c_void) };
-        const B: Ref = unsafe { Ref::new_unchecked(16384 as *mut c_void) };
+        const A: Address = unsafe { Address::new_unchecked(4096 as *mut c_void) };
+        const B: Address = unsafe { Address::new_unchecked(16384 as *mut c_void) };
 
         let mut m: MemoryMap<1> = MemoryMap::default();
         m.insert_area(A, PAGE_SIZE, Permissions::READ, InsertAreaFlags::empty())
@@ -273,8 +273,8 @@ mod tests {
 
     #[test]
     fn insert_area_intersects() {
-        const A: Ref = unsafe { Ref::new_unchecked(4096 as *mut c_void) };
-        const B: Ref = unsafe { Ref::new_unchecked(4096 as *mut c_void) };
+        const A: Address = unsafe { Address::new_unchecked(4096 as *mut c_void) };
+        const B: Address = unsafe { Address::new_unchecked(4096 as *mut c_void) };
 
         let mut m: MemoryMap<2> = MemoryMap::default();
         m.insert_area(A, PAGE_SIZE, Permissions::READ, InsertAreaFlags::empty())
@@ -287,8 +287,8 @@ mod tests {
 
     #[test]
     fn insert_area_adjacent() {
-        const A: Ref = unsafe { Ref::new_unchecked(4096 as *mut c_void) };
-        const B: Ref = unsafe { Ref::new_unchecked(8192 as *mut c_void) };
+        const A: Address = unsafe { Address::new_unchecked(4096 as *mut c_void) };
+        const B: Address = unsafe { Address::new_unchecked(8192 as *mut c_void) };
 
         let mut m: MemoryMap<2> = MemoryMap::default();
 
