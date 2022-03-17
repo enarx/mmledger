@@ -111,7 +111,7 @@ pub enum MmapError {
 bitflags::bitflags! {
     /// Flags for mmap
     #[repr(transparent)]
-    pub struct InsertAreaFlags: usize {
+    pub struct InsertFlags: usize {
         /// Do not commit mmap
         const DRY_RUN = 1 << 0;
     }
@@ -121,10 +121,10 @@ impl<const N: usize> MemoryMap<N> {
     /// Check that the given memory area is disjoint and there is enough space
     /// in the ledger, and the permissions are legit. Add memory area to the
     /// database. Only disjoint areas are allowed.
-    pub fn insert_area(
+    pub fn insert(
         &mut self,
         area: MemoryArea,
-        flags: InsertAreaFlags,
+        flags: InsertFlags,
     ) -> Result<MemoryArea, MmapError> {
         // A microarchitecture constraint in SGX.
         if (area.permissions() & Permissions::READ) != Permissions::READ {
@@ -167,7 +167,7 @@ impl<const N: usize> MemoryMap<N> {
                 break;
             }
 
-            if !flags.contains(InsertAreaFlags::DRY_RUN) {
+            if !flags.contains(InsertFlags::DRY_RUN) {
                 self.mm.remove(&adj_addr);
             }
 
@@ -178,7 +178,7 @@ impl<const N: usize> MemoryMap<N> {
             result.size += adj_size;
         }
 
-        if !flags.contains(InsertAreaFlags::DRY_RUN) {
+        if !flags.contains(InsertFlags::DRY_RUN) {
             match self
                 .mm
                 .insert(result.address.as_ptr() as usize, Some(result))
@@ -243,13 +243,13 @@ mod tests {
     }
 
     #[test]
-    fn insert_area() {
+    fn insert() {
         const A: Address = unsafe { Address::new_unchecked(4096 as *mut c_void) };
 
         let mut m: MemoryMap<1> = MemoryMap::default();
         let area = MemoryArea::new(A, PAGE_SIZE, Permissions::READ);
 
-        let area = match m.insert_area(area, InsertAreaFlags::empty()) {
+        let area = match m.insert(area, InsertFlags::empty()) {
             Ok(area) => area,
             _ => panic!("mmap"),
         };
@@ -258,20 +258,20 @@ mod tests {
     }
 
     #[test]
-    fn insert_area_no_permissions() {
+    fn insert_no_permissions() {
         const A: Address = unsafe { Address::new_unchecked(4096 as *mut c_void) };
 
         let mut m: MemoryMap<1> = MemoryMap::default();
         let area = MemoryArea::new(A, PAGE_SIZE, Permissions::empty());
 
-        match m.insert_area(area, InsertAreaFlags::DRY_RUN) {
+        match m.insert(area, InsertFlags::DRY_RUN) {
             Err(MmapError::InvalidPermissions) => (),
             _ => panic!("no intersects"),
         }
     }
 
     #[test]
-    fn insert_area_overflow() {
+    fn insert_overflow() {
         const A: Address = unsafe { Address::new_unchecked(4096 as *mut c_void) };
         const B: Address = unsafe { Address::new_unchecked(16384 as *mut c_void) };
 
@@ -279,15 +279,15 @@ mod tests {
         let area_a = MemoryArea::new(A, PAGE_SIZE, Permissions::READ);
         let area_b = MemoryArea::new(B, PAGE_SIZE, Permissions::READ);
 
-        m.insert_area(area_a, InsertAreaFlags::empty()).unwrap();
-        match m.insert_area(area_b, InsertAreaFlags::DRY_RUN) {
+        m.insert(area_a, InsertFlags::empty()).unwrap();
+        match m.insert(area_b, InsertFlags::DRY_RUN) {
             Err(MmapError::OutOfCapacity) => (),
             _ => panic!("no overflow"),
         }
     }
 
     #[test]
-    fn insert_area_intersects() {
+    fn insert_intersects() {
         const A: Address = unsafe { Address::new_unchecked(4096 as *mut c_void) };
         const B: Address = unsafe { Address::new_unchecked(4096 as *mut c_void) };
 
@@ -295,15 +295,15 @@ mod tests {
         let area_a = MemoryArea::new(A, PAGE_SIZE, Permissions::READ);
         let area_b = MemoryArea::new(B, PAGE_SIZE, Permissions::READ);
 
-        m.insert_area(area_a, InsertAreaFlags::empty()).unwrap();
-        match m.insert_area(area_b, InsertAreaFlags::DRY_RUN) {
+        m.insert(area_a, InsertFlags::empty()).unwrap();
+        match m.insert(area_b, InsertFlags::DRY_RUN) {
             Err(MmapError::InvalidIntersection) => (),
             _ => panic!("no intersects"),
         }
     }
 
     #[test]
-    fn insert_area_adjacent() {
+    fn insert_adjacent() {
         const A: Address = unsafe { Address::new_unchecked(4096 as *mut c_void) };
         const B: Address = unsafe { Address::new_unchecked(8192 as *mut c_void) };
 
@@ -311,9 +311,9 @@ mod tests {
         let area_a = MemoryArea::new(A, PAGE_SIZE, Permissions::READ);
         let area_b = MemoryArea::new(B, PAGE_SIZE, Permissions::READ);
 
-        m.insert_area(area_a, InsertAreaFlags::empty()).unwrap();
+        m.insert(area_a, InsertFlags::empty()).unwrap();
 
-        let area = match m.insert_area(area_b, InsertAreaFlags::DRY_RUN) {
+        let area = match m.insert(area_b, InsertFlags::DRY_RUN) {
             Ok(area) => area,
             _ => panic!("no success"),
         };
