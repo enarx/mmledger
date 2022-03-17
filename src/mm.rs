@@ -92,7 +92,7 @@ pub struct MemoryMap<const N: usize> {
 
 /// Error codes for mmap(), mprotect() and brk() handlers
 #[derive(Debug)]
-pub enum CanMapError {
+pub enum MmapError {
     /// The permission mask was not supported
     InvalidPermissions,
     /// Two VMA's are have an intersection not supported in the current version
@@ -121,10 +121,10 @@ impl<const N: usize> MemoryMap<N> {
         size: usize,
         permissions: Permissions,
         flags: MmapFlags,
-    ) -> Result<MemoryArea, CanMapError> {
+    ) -> Result<MemoryArea, MmapError> {
         // A microarchitecture constraint in SGX.
         if (permissions & Permissions::READ) != Permissions::READ {
-            return Err(CanMapError::InvalidPermissions);
+            return Err(MmapError::InvalidPermissions);
         }
 
         let mut area = MemoryArea::new(addr, size, permissions);
@@ -139,7 +139,7 @@ impl<const N: usize> MemoryMap<N> {
             let old = old.unwrap();
 
             if old.intersects(area) {
-                return Err(CanMapError::UnsupportedIntersection);
+                return Err(MmapError::UnsupportedIntersection);
             }
 
             // Collect adjacent memory areas, which have the same permissions.
@@ -153,7 +153,7 @@ impl<const N: usize> MemoryMap<N> {
         assert!(self.mm.len() >= adj_count);
 
         if (self.mm.len() - adj_count) == N {
-            return Err(CanMapError::OutOfCapacity);
+            return Err(MmapError::OutOfCapacity);
         }
 
         // Remove adjacent memory areas, and update address and len of the
@@ -252,7 +252,7 @@ mod tests {
 
         let mut m: MemoryMap<1> = MemoryMap::default();
         match m.mmap(A, PAGE_SIZE, Permissions::empty(), MmapFlags::DRY_RUN) {
-            Err(CanMapError::InvalidPermissions) => (),
+            Err(MmapError::InvalidPermissions) => (),
             _ => panic!("no intersects"),
         }
     }
@@ -266,7 +266,7 @@ mod tests {
         m.mmap(A, PAGE_SIZE, Permissions::READ, MmapFlags::empty())
             .unwrap();
         match m.mmap(B, PAGE_SIZE, Permissions::READ, MmapFlags::DRY_RUN) {
-            Err(CanMapError::OutOfCapacity) => (),
+            Err(MmapError::OutOfCapacity) => (),
             _ => panic!("no overflow"),
         }
     }
@@ -280,7 +280,7 @@ mod tests {
         m.mmap(A, PAGE_SIZE, Permissions::READ, MmapFlags::empty())
             .unwrap();
         match m.mmap(B, PAGE_SIZE, Permissions::READ, MmapFlags::DRY_RUN) {
-            Err(CanMapError::UnsupportedIntersection) => (),
+            Err(MmapError::UnsupportedIntersection) => (),
             _ => panic!("no intersects"),
         }
     }
