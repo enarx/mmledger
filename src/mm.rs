@@ -93,7 +93,7 @@ impl PartialOrd for MemoryArea {
 /// A virtual memory map descriptor.
 #[derive(Default)]
 pub struct MemoryMap<const N: usize> {
-    mm: FnvIndexMap<usize, Option<MemoryArea>, N>,
+    map: FnvIndexMap<usize, Option<MemoryArea>, N>,
 }
 
 /// Error codes for mmap(), mprotect() and brk() handlers
@@ -137,9 +137,9 @@ impl<const N: usize> MemoryMap<N> {
 
         // OOM check can be done only after finding out how many adjacent
         // memory areas the memory map contains.
-        assert!(self.mm.len() <= N);
+        assert!(self.map.len() <= N);
 
-        for (_, old) in self.mm.iter() {
+        for (_, old) in self.map.iter() {
             let old = old.unwrap();
 
             if old.intersects(result) {
@@ -154,9 +154,9 @@ impl<const N: usize> MemoryMap<N> {
             }
         }
 
-        assert!(self.mm.len() >= adj_count);
+        assert!(self.map.len() >= adj_count);
 
-        if (self.mm.len() - adj_count) == N {
+        if (self.map.len() - adj_count) == N {
             return Err(InsertError::OutOfCapacity);
         }
 
@@ -168,7 +168,7 @@ impl<const N: usize> MemoryMap<N> {
             }
 
             if !flags.contains(InsertFlags::DRY_RUN) {
-                self.mm.remove(&adj_addr);
+                self.map.remove(&adj_addr);
             }
 
             result.address = min(
@@ -180,7 +180,7 @@ impl<const N: usize> MemoryMap<N> {
 
         if !flags.contains(InsertFlags::DRY_RUN) {
             match self
-                .mm
+                .map
                 .insert(result.address.as_ptr() as usize, Some(result))
             {
                 Ok(None) => (),
