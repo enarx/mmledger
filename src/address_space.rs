@@ -1,4 +1,5 @@
-//! A ledger for mm-calls.
+//! An address space keeps track of reserved regions of addresses.
+
 use core::cmp::{min, Ordering};
 use core::ffi::c_void;
 use core::ptr::NonNull;
