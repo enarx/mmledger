@@ -242,10 +242,6 @@ impl<const N: usize> AddressSpace<N> {
         let mut adj_table: [(usize, usize); 2] = [(0, 0); 2];
         let mut adj_count: usize = 0;
 
-        // OOM check can be done only after finding out how many adjacent
-        // memory ranges the memory map contains.
-        assert!(self.map.len() <= N);
-
         for (_, old) in self.map.iter() {
             let old = old.unwrap();
 
@@ -260,8 +256,6 @@ impl<const N: usize> AddressSpace<N> {
                 adj_count += 1;
             }
         }
-
-        assert!(self.map.len() >= adj_count);
 
         if (self.map.len() - adj_count) == N {
             return Err(InsertError::OutOfCapacity);
