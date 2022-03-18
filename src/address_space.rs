@@ -1,4 +1,5 @@
-//! An address space keeps track of reserved regions of addresses.
+//! An address space keeps track of a set of reserved regions of addresses
+//! within a fixed address range.
 
 use core::cmp::{min, Ordering};
 use core::ffi::c_void;
@@ -22,7 +23,7 @@ bitflags::bitflags! {
 
 #[derive(Clone, Copy, Debug, Eq)]
 #[repr(C, align(32))]
-pub struct AddressRange {
+pub struct AddressRegion {
     address: Address,
     length: usize,
     permissions: Permissions,
@@ -31,7 +32,7 @@ pub struct AddressRange {
 
 /// A virtual memory range (VMA) descriptor. Equality and ordering are defined by
 /// the start address of a VMA.
-impl AddressRange {
+impl AddressRegion {
     /// Create a new instance.
     #[inline]
     pub fn new(address: Address, length: usize, permissions: Permissions) -> Self {
@@ -75,30 +76,30 @@ impl AddressRange {
 
     /// Check if the given range intersects with this.
     #[inline]
-    pub fn intersects(&self, other: AddressRange) -> bool {
+    pub fn intersects(&self, other: AddressRegion) -> bool {
         !(self.address >= other.end() || other.address >= self.end())
     }
 
     /// Check if the given range is adjacent to this.
     #[inline]
-    pub fn is_adjacent(&self, other: AddressRange) -> bool {
+    pub fn is_adjacent(&self, other: AddressRegion) -> bool {
         self.end() == other.address || other.end() == self.address
     }
 }
 
-impl PartialEq for AddressRange {
+impl PartialEq for AddressRegion {
     fn eq(&self, other: &Self) -> bool {
         self.address == other.address
     }
 }
 
-impl Ord for AddressRange {
+impl Ord for AddressRegion {
     fn cmp(&self, other: &Self) -> Ordering {
         self.address.cmp(&other.address)
     }
 }
 
-impl PartialOrd for AddressRange {
+impl PartialOrd for AddressRegion {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
@@ -108,7 +109,7 @@ impl PartialOrd for AddressRange {
 pub struct AddressSpace<const N: usize> {
     address: Address,
     length: usize,
-    map: FnvIndexMap<usize, Option<AddressRange>, N>,
+    map: FnvIndexMap<usize, Option<AddressRegion>, N>,
 }
 
 /// Error codes for `AddressSpace::alloc()`
@@ -157,7 +158,7 @@ impl<const N: usize> AddressSpace<N> {
     /// Create a new instance.
     #[inline]
     pub fn new(address: Address, length: usize) -> Self {
-        let map = FnvIndexMap::<usize, Option<AddressRange>, N>::default();
+        let map = FnvIndexMap::<usize, Option<AddressRegion>, N>::default();
 
         Self {
             address,
@@ -184,7 +185,7 @@ impl<const N: usize> AddressSpace<N> {
         &mut self,
         _length: usize,
         permissions: Permissions,
-    ) -> Result<AddressRange, AllocError> {
+    ) -> Result<AddressRegion, AllocError> {
         // A microarchitecture constraint in SGX.
         if (permissions & Permissions::READ) != Permissions::READ {
             return Err(AllocError::InvalidPermissions);
@@ -200,8 +201,8 @@ impl<const N: usize> AddressSpace<N> {
     /// Set permissions for an address range.
     pub fn set_permissions(
         &mut self,
-        range: AddressRange,
-    ) -> Result<AddressRange, SetPermissionsError> {
+        range: AddressRegion,
+    ) -> Result<AddressRegion, SetPermissionsError> {
         // A microarchitecture constraint in SGX.
         if (range.permissions() & Permissions::READ) != Permissions::READ {
             return Err(SetPermissionsError::InvalidPermissions);
@@ -220,9 +221,9 @@ impl<const N: usize> AddressSpace<N> {
     /// being).
     pub fn insert(
         &mut self,
-        range: AddressRange,
+        range: AddressRegion,
         flags: InsertFlags,
-    ) -> Result<AddressRange, InsertError> {
+    ) -> Result<AddressRegion, InsertError> {
         // A microarchitecture constraint in SGX.
         if (range.permissions() & Permissions::READ) != Permissions::READ {
             return Err(InsertError::InvalidPermissions);
@@ -313,8 +314,8 @@ mod tests {
         const B: Address = unsafe { Address::new_unchecked(PAGE_SIZE as *mut c_void) };
 
         assert_eq!(
-            AddressRange::new(A, PAGE_SIZE, Permissions::READ),
-            AddressRange::new(B, PAGE_SIZE, Permissions::READ),
+            AddressRegion::new(A, PAGE_SIZE, Permissions::READ),
+            AddressRegion::new(B, PAGE_SIZE, Permissions::READ),
         );
     }
 
@@ -324,8 +325,8 @@ mod tests {
         const B: Address = unsafe { Address::new_unchecked(MEMORY_MAP_SIZE as *mut c_void) };
 
         assert!(
-            AddressRange::new(A, PAGE_SIZE, Permissions::READ)
-                < AddressRange::new(B, PAGE_SIZE, Permissions::READ)
+            AddressRegion::new(A, PAGE_SIZE, Permissions::READ)
+                < AddressRegion::new(B, PAGE_SIZE, Permissions::READ)
         );
     }
 
@@ -335,8 +336,8 @@ mod tests {
         const B: Address = unsafe { Address::new_unchecked(MEMORY_MAP_SIZE as *mut c_void) };
 
         assert!(
-            AddressRange::new(A, PAGE_SIZE, Permissions::READ)
-                != AddressRange::new(B, PAGE_SIZE, Permissions::READ)
+            AddressRegion::new(A, PAGE_SIZE, Permissions::READ)
+                != AddressRegion::new(B, PAGE_SIZE, Permissions::READ)
         );
     }
 
@@ -346,8 +347,8 @@ mod tests {
         const B: Address = unsafe { Address::new_unchecked(PAGE_SIZE as *mut c_void) };
 
         assert!(
-            !(AddressRange::new(A, PAGE_SIZE, Permissions::READ)
-                < AddressRange::new(B, PAGE_SIZE, Permissions::READ))
+            !(AddressRegion::new(A, PAGE_SIZE, Permissions::READ)
+                < AddressRegion::new(B, PAGE_SIZE, Permissions::READ))
         );
     }
 
@@ -356,14 +357,14 @@ mod tests {
         const A: Address = unsafe { Address::new_unchecked((2 * PAGE_SIZE) as *mut c_void) };
 
         let mut m: AddressSpace<1> = AddressSpace::new(MEMORY_MAP_ADDRESS, MEMORY_MAP_SIZE);
-        let range = AddressRange::new(A, PAGE_SIZE, Permissions::READ);
+        let range = AddressRegion::new(A, PAGE_SIZE, Permissions::READ);
 
         let range = match m.insert(range, InsertFlags::empty()) {
             Ok(range) => range,
             _ => panic!(),
         };
 
-        assert_eq!(range, AddressRange::new(A, PAGE_SIZE, Permissions::READ));
+        assert_eq!(range, AddressRegion::new(A, PAGE_SIZE, Permissions::READ));
     }
 
     #[test]
@@ -372,8 +373,8 @@ mod tests {
         const B: Address = unsafe { Address::new_unchecked((3 * PAGE_SIZE) as *mut c_void) };
 
         let mut m: AddressSpace<2> = AddressSpace::new(MEMORY_MAP_ADDRESS, MEMORY_MAP_SIZE);
-        let range_a = AddressRange::new(A, PAGE_SIZE, Permissions::READ);
-        let range_b = AddressRange::new(B, PAGE_SIZE, Permissions::READ);
+        let range_a = AddressRegion::new(A, PAGE_SIZE, Permissions::READ);
+        let range_b = AddressRegion::new(B, PAGE_SIZE, Permissions::READ);
 
         m.insert(range_a, InsertFlags::empty()).unwrap();
 
@@ -382,7 +383,10 @@ mod tests {
             _ => panic!(),
         };
 
-        assert_eq!(range, AddressRange::new(A, 2 * PAGE_SIZE, Permissions::READ));
+        assert_eq!(
+            range,
+            AddressRegion::new(A, 2 * PAGE_SIZE, Permissions::READ)
+        );
     }
 
     #[test]
@@ -390,7 +394,7 @@ mod tests {
         const A: Address = unsafe { Address::new_unchecked((5 * PAGE_SIZE) as *mut c_void) };
 
         let mut m: AddressSpace<2> = AddressSpace::new(MEMORY_MAP_ADDRESS, MEMORY_MAP_SIZE);
-        let range_a = AddressRange::new(A, PAGE_SIZE, Permissions::READ);
+        let range_a = AddressRegion::new(A, PAGE_SIZE, Permissions::READ);
 
         match m.insert(range_a, InsertFlags::DRY_RUN) {
             Err(InsertError::OutOfRange) => (),
@@ -404,8 +408,8 @@ mod tests {
         const B: Address = unsafe { Address::new_unchecked((2 * PAGE_SIZE) as *mut c_void) };
 
         let mut m: AddressSpace<2> = AddressSpace::new(MEMORY_MAP_ADDRESS, MEMORY_MAP_SIZE);
-        let range_a = AddressRange::new(A, PAGE_SIZE, Permissions::READ);
-        let range_b = AddressRange::new(B, PAGE_SIZE, Permissions::READ);
+        let range_a = AddressRegion::new(A, PAGE_SIZE, Permissions::READ);
+        let range_b = AddressRegion::new(B, PAGE_SIZE, Permissions::READ);
 
         m.insert(range_a, InsertFlags::empty()).unwrap();
         match m.insert(range_b, InsertFlags::DRY_RUN) {
@@ -419,7 +423,7 @@ mod tests {
         const A: Address = unsafe { Address::new_unchecked((2 * PAGE_SIZE) as *mut c_void) };
 
         let mut m: AddressSpace<1> = AddressSpace::new(MEMORY_MAP_ADDRESS, MEMORY_MAP_SIZE);
-        let range = AddressRange::new(A, PAGE_SIZE, Permissions::empty());
+        let range = AddressRegion::new(A, PAGE_SIZE, Permissions::empty());
 
         match m.insert(range, InsertFlags::DRY_RUN) {
             Err(InsertError::InvalidPermissions) => (),
@@ -433,8 +437,8 @@ mod tests {
         const B: Address = unsafe { Address::new_unchecked((4 * PAGE_SIZE) as *mut c_void) };
 
         let mut m: AddressSpace<1> = AddressSpace::new(MEMORY_MAP_ADDRESS, MEMORY_MAP_SIZE);
-        let range_a = AddressRange::new(A, PAGE_SIZE, Permissions::READ);
-        let range_b = AddressRange::new(B, PAGE_SIZE, Permissions::READ);
+        let range_a = AddressRegion::new(A, PAGE_SIZE, Permissions::READ);
+        let range_b = AddressRegion::new(B, PAGE_SIZE, Permissions::READ);
 
         m.insert(range_a, InsertFlags::empty()).unwrap();
         match m.insert(range_b, InsertFlags::DRY_RUN) {
