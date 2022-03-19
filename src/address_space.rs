@@ -413,6 +413,24 @@ mod tests {
     }
 
     #[test]
+    fn insert_not_intersects() {
+        const A: Address = unsafe { Address::new_unchecked((2 * PAGE_SIZE) as *mut c_void) };
+        const B: Address = unsafe { Address::new_unchecked((4 * PAGE_SIZE) as *mut c_void) };
+
+        let mut m: AddressSpace<2> = AddressSpace::new(MEMORY_MAP_ADDRESS, MEMORY_MAP_SIZE);
+        let range_a = AddressRegion::new(A, PAGE_SIZE, Permissions::READ);
+        let range_b = AddressRegion::new(B, PAGE_SIZE, Permissions::READ);
+
+        m.insert(range_a, InsertFlags::empty()).unwrap();
+        let range_c = match m.insert(range_b, InsertFlags::DRY_RUN) {
+            Ok(range) => range,
+            _ => panic!(),
+        };
+
+        assert_eq!(range_c, range_b);
+    }
+
+    #[test]
     fn insert_invalid_permissions() {
         const A: Address = unsafe { Address::new_unchecked((2 * PAGE_SIZE) as *mut c_void) };
 
