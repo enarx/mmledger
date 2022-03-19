@@ -1,5 +1,5 @@
 //! An address space keeps track of a set of reserved regions of addresses
-//! within a fixed address range.
+//! within a fixed address region.
 
 use core::cmp::{min, Ordering};
 use core::ffi::c_void;
@@ -30,7 +30,7 @@ pub struct AddressRegion {
     padding: usize,
 }
 
-/// A virtual memory range (VMA) descriptor. Equality and ordering are defined by
+/// A virtual memory region (VMA) descriptor. Equality and ordering are defined by
 /// the start address of a VMA.
 impl AddressRegion {
     /// Create a new instance.
@@ -62,7 +62,7 @@ impl AddressRegion {
         self.permissions
     }
 
-    /// Return end address of the range.
+    /// Return end address of the region.
     #[inline]
     pub fn end(&self) -> Address {
         let end_ptr = (self.address.as_ptr() as usize + self.length) as *mut c_void;
@@ -74,13 +74,13 @@ impl AddressRegion {
         }
     }
 
-    /// Check if the given range intersects with this.
+    /// Check if the given region intersects with this.
     #[inline]
     pub fn intersects(&self, other: AddressRegion) -> bool {
         !(self.address >= other.end() || other.address >= self.end())
     }
 
-    /// Check if the given range is adjacent to this.
+    /// Check if the given region is adjacent to this.
     #[inline]
     pub fn is_adjacent(&self, other: AddressRegion) -> bool {
         self.end() == other.address || other.end() == self.address
@@ -128,7 +128,7 @@ pub enum SetPermissionsError {
     InvalidPermissions,
     /// Out of storage capacity
     OutOfCapacity,
-    /// Not fully overlapping the existing address ranges
+    /// Not fully overlapping the existing address regions
     NotOverlapping,
 }
 
@@ -179,7 +179,7 @@ impl<const N: usize> AddressSpace<N> {
         self.length
     }
 
-    /// Traverse through the address space, and try to allocate an address range
+    /// Traverse through the address space, and try to allocate an address region
     /// with the required metrics.
     pub fn alloc(
         &mut self,
@@ -192,53 +192,53 @@ impl<const N: usize> AddressSpace<N> {
         }
 
         // TODO
-        // Iterate address ranges, and find the first hole with enough space.
-        // Create an address range, and return it to the caller.
+        // Iterate address regions, and find the first hole with enough space.
+        // Create an address region, and return it to the caller.
 
         Err(AllocError::OutOfCapacity)
     }
 
-    /// Set permissions for an address range.
+    /// Set permissions for an address region.
     pub fn set_permissions(
         &mut self,
-        range: AddressRegion,
+        region: AddressRegion,
     ) -> Result<AddressRegion, SetPermissionsError> {
         // A microarchitecture constraint in SGX.
-        if (range.permissions() & Permissions::READ) != Permissions::READ {
+        if (region.permissions() & Permissions::READ) != Permissions::READ {
             return Err(SetPermissionsError::InvalidPermissions);
         }
 
         // TODO
-        // Iterate address ranges, and find the first hole with enough space.
-        // Create an address range, and return it to the caller.
+        // Iterate address regions, and find the first hole with enough space.
+        // Create an address region, and return it to the caller.
 
         Err(SetPermissionsError::OutOfCapacity)
     }
 
-    /// Check that the given memory range is disjoint and there is enough space
-    /// in the ledger, and the permissions are legit. Add memory range to the
-    /// database. Overlapping address ranges are not supported (for the time
+    /// Check that the given memory region is disjoint and there is enough space
+    /// in the ledger, and the permissions are legit. Add memory region to the
+    /// database. Overlapping address regions are not supported (for the time
     /// being).
     pub fn insert(
         &mut self,
-        range: AddressRegion,
+        region: AddressRegion,
         flags: InsertFlags,
     ) -> Result<AddressRegion, InsertError> {
         // A microarchitecture constraint in SGX.
-        if (range.permissions() & Permissions::READ) != Permissions::READ {
+        if (region.permissions() & Permissions::READ) != Permissions::READ {
             return Err(InsertError::InvalidPermissions);
         }
 
-        let range_address_value = range.address().as_ptr() as usize;
+        let region_address_value = region.address().as_ptr() as usize;
         let map_address_value = self.address.as_ptr() as usize;
 
-        if range_address_value < map_address_value
-            || range_address_value >= (map_address_value + self.length)
+        if region_address_value < map_address_value
+            || region_address_value >= (map_address_value + self.length)
         {
             return Err(InsertError::OutOfRange);
         }
 
-        let mut result = range;
+        let mut result = region;
         let mut adj_table: [(usize, usize); 2] = [(0, 0); 2];
         let mut adj_count: usize = 0;
 
@@ -249,7 +249,7 @@ impl<const N: usize> AddressSpace<N> {
                 return Err(InsertError::Overlapping);
             }
 
-            // Collect adjacent memory ranges, which have the same permissions.
+            // Collect adjacent memory regions, which have the same permissions.
             if old.is_adjacent(result) && old.permissions == result.permissions {
                 assert!(adj_count < 2);
                 adj_table[adj_count] = (old.address.as_ptr() as usize, old.length);
@@ -261,8 +261,8 @@ impl<const N: usize> AddressSpace<N> {
             return Err(InsertError::OutOfCapacity);
         }
 
-        // Remove adjacent memory ranges, and update address and len of the
-        // new range.
+        // Remove adjacent memory regions, and update address and len of the
+        // new region.
         for (adj_addr, adj_length) in adj_table {
             if adj_addr == 0 {
                 break;
@@ -303,7 +303,7 @@ mod tests {
     const MEMORY_MAP_SIZE: usize = 3 * PAGE_SIZE;
 
     #[test]
-    fn address_range_equal() {
+    fn address_region_equal() {
         const A: Address = unsafe { Address::new_unchecked(PAGE_SIZE as *mut c_void) };
         const B: Address = unsafe { Address::new_unchecked(PAGE_SIZE as *mut c_void) };
 
@@ -314,7 +314,7 @@ mod tests {
     }
 
     #[test]
-    fn address_range_less_than() {
+    fn address_region_less_than() {
         const A: Address = unsafe { Address::new_unchecked(PAGE_SIZE as *mut c_void) };
         const B: Address = unsafe { Address::new_unchecked(MEMORY_MAP_SIZE as *mut c_void) };
 
@@ -325,7 +325,7 @@ mod tests {
     }
 
     #[test]
-    fn address_range_not_equal() {
+    fn address_region_not_equal() {
         const A: Address = unsafe { Address::new_unchecked(PAGE_SIZE as *mut c_void) };
         const B: Address = unsafe { Address::new_unchecked(MEMORY_MAP_SIZE as *mut c_void) };
 
@@ -336,7 +336,7 @@ mod tests {
     }
 
     #[test]
-    fn address_range_not_less_than() {
+    fn address_region_not_less_than() {
         const A: Address = unsafe { Address::new_unchecked(MEMORY_MAP_SIZE as *mut c_void) };
         const B: Address = unsafe { Address::new_unchecked(PAGE_SIZE as *mut c_void) };
 
@@ -351,14 +351,14 @@ mod tests {
         const A: Address = unsafe { Address::new_unchecked((2 * PAGE_SIZE) as *mut c_void) };
 
         let mut m: AddressSpace<1> = AddressSpace::new(MEMORY_MAP_ADDRESS, MEMORY_MAP_SIZE);
-        let range = AddressRegion::new(A, PAGE_SIZE, Permissions::READ);
+        let region = AddressRegion::new(A, PAGE_SIZE, Permissions::READ);
 
-        let range = match m.insert(range, InsertFlags::empty()) {
-            Ok(range) => range,
+        let region = match m.insert(region, InsertFlags::empty()) {
+            Ok(region) => region,
             _ => panic!(),
         };
 
-        assert_eq!(range, AddressRegion::new(A, PAGE_SIZE, Permissions::READ));
+        assert_eq!(region, AddressRegion::new(A, PAGE_SIZE, Permissions::READ));
     }
 
     #[test]
@@ -367,18 +367,18 @@ mod tests {
         const B: Address = unsafe { Address::new_unchecked((3 * PAGE_SIZE) as *mut c_void) };
 
         let mut m: AddressSpace<2> = AddressSpace::new(MEMORY_MAP_ADDRESS, MEMORY_MAP_SIZE);
-        let range_a = AddressRegion::new(A, PAGE_SIZE, Permissions::READ);
-        let range_b = AddressRegion::new(B, PAGE_SIZE, Permissions::READ);
+        let region_a = AddressRegion::new(A, PAGE_SIZE, Permissions::READ);
+        let region_b = AddressRegion::new(B, PAGE_SIZE, Permissions::READ);
 
-        m.insert(range_a, InsertFlags::empty()).unwrap();
+        m.insert(region_a, InsertFlags::empty()).unwrap();
 
-        let range = match m.insert(range_b, InsertFlags::DRY_RUN) {
-            Ok(range) => range,
+        let region = match m.insert(region_b, InsertFlags::DRY_RUN) {
+            Ok(region) => region,
             _ => panic!(),
         };
 
         assert_eq!(
-            range,
+            region,
             AddressRegion::new(A, 2 * PAGE_SIZE, Permissions::READ)
         );
     }
@@ -388,9 +388,9 @@ mod tests {
         const A: Address = unsafe { Address::new_unchecked((5 * PAGE_SIZE) as *mut c_void) };
 
         let mut m: AddressSpace<2> = AddressSpace::new(MEMORY_MAP_ADDRESS, MEMORY_MAP_SIZE);
-        let range_a = AddressRegion::new(A, PAGE_SIZE, Permissions::READ);
+        let region_a = AddressRegion::new(A, PAGE_SIZE, Permissions::READ);
 
-        match m.insert(range_a, InsertFlags::DRY_RUN) {
+        match m.insert(region_a, InsertFlags::DRY_RUN) {
             Err(InsertError::OutOfRange) => (),
             _ => panic!(),
         }
@@ -402,11 +402,11 @@ mod tests {
         const B: Address = unsafe { Address::new_unchecked((2 * PAGE_SIZE) as *mut c_void) };
 
         let mut m: AddressSpace<2> = AddressSpace::new(MEMORY_MAP_ADDRESS, MEMORY_MAP_SIZE);
-        let range_a = AddressRegion::new(A, PAGE_SIZE, Permissions::READ);
-        let range_b = AddressRegion::new(B, PAGE_SIZE, Permissions::READ);
+        let region_a = AddressRegion::new(A, PAGE_SIZE, Permissions::READ);
+        let region_b = AddressRegion::new(B, PAGE_SIZE, Permissions::READ);
 
-        m.insert(range_a, InsertFlags::empty()).unwrap();
-        match m.insert(range_b, InsertFlags::DRY_RUN) {
+        m.insert(region_a, InsertFlags::empty()).unwrap();
+        match m.insert(region_b, InsertFlags::DRY_RUN) {
             Err(InsertError::Overlapping) => (),
             _ => panic!(),
         }
@@ -418,16 +418,16 @@ mod tests {
         const B: Address = unsafe { Address::new_unchecked((4 * PAGE_SIZE) as *mut c_void) };
 
         let mut m: AddressSpace<2> = AddressSpace::new(MEMORY_MAP_ADDRESS, MEMORY_MAP_SIZE);
-        let range_a = AddressRegion::new(A, PAGE_SIZE, Permissions::READ);
-        let range_b = AddressRegion::new(B, PAGE_SIZE, Permissions::READ);
+        let region_a = AddressRegion::new(A, PAGE_SIZE, Permissions::READ);
+        let region_b = AddressRegion::new(B, PAGE_SIZE, Permissions::READ);
 
-        m.insert(range_a, InsertFlags::empty()).unwrap();
-        let range_c = match m.insert(range_b, InsertFlags::DRY_RUN) {
-            Ok(range) => range,
+        m.insert(region_a, InsertFlags::empty()).unwrap();
+        let region_c = match m.insert(region_b, InsertFlags::DRY_RUN) {
+            Ok(region) => region,
             _ => panic!(),
         };
 
-        assert_eq!(range_c, range_b);
+        assert_eq!(region_c, region_b);
     }
 
     #[test]
@@ -435,9 +435,9 @@ mod tests {
         const A: Address = unsafe { Address::new_unchecked((2 * PAGE_SIZE) as *mut c_void) };
 
         let mut m: AddressSpace<1> = AddressSpace::new(MEMORY_MAP_ADDRESS, MEMORY_MAP_SIZE);
-        let range = AddressRegion::new(A, PAGE_SIZE, Permissions::empty());
+        let region = AddressRegion::new(A, PAGE_SIZE, Permissions::empty());
 
-        match m.insert(range, InsertFlags::DRY_RUN) {
+        match m.insert(region, InsertFlags::DRY_RUN) {
             Err(InsertError::InvalidPermissions) => (),
             _ => panic!(),
         }
@@ -449,11 +449,11 @@ mod tests {
         const B: Address = unsafe { Address::new_unchecked((4 * PAGE_SIZE) as *mut c_void) };
 
         let mut m: AddressSpace<1> = AddressSpace::new(MEMORY_MAP_ADDRESS, MEMORY_MAP_SIZE);
-        let range_a = AddressRegion::new(A, PAGE_SIZE, Permissions::READ);
-        let range_b = AddressRegion::new(B, PAGE_SIZE, Permissions::READ);
+        let region_a = AddressRegion::new(A, PAGE_SIZE, Permissions::READ);
+        let region_b = AddressRegion::new(B, PAGE_SIZE, Permissions::READ);
 
-        m.insert(range_a, InsertFlags::empty()).unwrap();
-        match m.insert(range_b, InsertFlags::DRY_RUN) {
+        m.insert(region_a, InsertFlags::empty()).unwrap();
+        match m.insert(region_b, InsertFlags::DRY_RUN) {
             Err(InsertError::OutOfCapacity) => (),
             _ => panic!(),
         }
