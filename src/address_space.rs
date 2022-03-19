@@ -56,6 +56,12 @@ impl AddressRegion {
         self.len
     }
 
+    /// Is the region's length zero?
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
     /// Return permissions.
     #[inline]
     pub fn permissions(&self) -> Permissions {
@@ -164,6 +170,12 @@ impl<const N: usize> AddressSpace<N> {
     #[inline]
     pub fn len(&self) -> usize {
         self.len
+    }
+
+    /// Is the address space length zero?
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
     }
 
     /// Loop through the address space in the minimum address order, and try to
