@@ -112,15 +112,6 @@ pub struct AddressSpace<const N: usize> {
     map: FnvIndexMap<usize, Option<AddressRegion>, N>,
 }
 
-/// Error codes for `AddressSpace::alloc()`
-#[derive(Debug)]
-pub enum AllocError {
-    /// Invalid permissions
-    InvalidPermissions,
-    /// Out of storage capacity
-    OutOfCapacity,
-}
-
 /// Error codes for `AddressSpace::set_permissions()`
 #[derive(Debug)]
 pub enum SetPermissionsError {
@@ -175,23 +166,34 @@ impl<const N: usize> AddressSpace<N> {
         self.len
     }
 
-    /// Traverse through the address space, and try to allocate an address region
-    /// with the required metrics.
-    pub fn alloc(
-        &mut self,
-        _len: usize,
-        permissions: Permissions,
-    ) -> Result<AddressRegion, AllocError> {
-        // A microarchitecture constraint in SGX.
-        if (permissions & Permissions::READ) != Permissions::READ {
-            return Err(AllocError::InvalidPermissions);
+    /// Loop through the address space in the minimum address order, and try to
+    /// find a region with the required metrics If enough space is found, place
+    /// the region adjacent to the region that follows it.
+    pub fn allocate(&mut self, size: usize, permissions: Permissions) -> Option<AddressRegion> {
+        let start = self.addr.as_ptr() as usize;
+        let mut log: [(usize, usize); 2] = [(start, start), (0, 0)];
+        let mut prev = 0;
+
+        for (_, region) in self.map.iter() {
+            let region = region.unwrap();
+            let next = (prev + 1) & 1;
+
+            log[next] = (
+                region.addr().as_ptr() as usize,
+                region.end().as_ptr() as usize,
+            );
+
+            let distance = log[next].0 - log[prev].1;
+            if distance >= size {
+                let addr = Address::new((log[next].0 - size) as *mut c_void).unwrap();
+
+                return Some(AddressRegion::new(addr, size, permissions));
+            }
+
+            prev = next;
         }
 
-        // TODO
-        // Iterate address regions, and find the first hole with enough space.
-        // Create an address region, and return it to the caller.
-
-        Err(AllocError::OutOfCapacity)
+        None
     }
 
     /// Set permissions for an address region.
@@ -332,6 +334,48 @@ mod tests {
             !(AddressRegion::new(A, PAGE_SIZE, Permissions::READ)
                 < AddressRegion::new(B, PAGE_SIZE, Permissions::READ))
         );
+    }
+
+    #[test]
+    fn allocate_success() {
+        const A: Address = unsafe { Address::new_unchecked((2 * PAGE_SIZE) as *mut c_void) };
+        const B: Address = unsafe { Address::new_unchecked((4 * PAGE_SIZE) as *mut c_void) };
+        const C: Address = unsafe { Address::new_unchecked((3 * PAGE_SIZE) as *mut c_void) };
+
+        let mut m: AddressSpace<2> = AddressSpace::new(MEMORY_MAP_ADDRESS, MEMORY_MAP_SIZE);
+        let region_a = AddressRegion::new(A, PAGE_SIZE, Permissions::READ);
+        let region_b = AddressRegion::new(B, PAGE_SIZE, Permissions::READ);
+
+        m.insert(region_a, InsertFlags::empty()).unwrap();
+        m.insert(region_b, InsertFlags::empty()).unwrap();
+
+        let region_c = match m.allocate(PAGE_SIZE, Permissions::READ | Permissions::WRITE) {
+            Some(r) => r,
+            None => panic!(),
+        };
+
+        assert_eq!(
+            region_c,
+            AddressRegion::new(C, PAGE_SIZE, Permissions::READ | Permissions::WRITE)
+        );
+    }
+
+    #[test]
+    fn allocate_failure() {
+        const A: Address = unsafe { Address::new_unchecked((2 * PAGE_SIZE) as *mut c_void) };
+        const B: Address = unsafe { Address::new_unchecked((4 * PAGE_SIZE) as *mut c_void) };
+
+        let mut m: AddressSpace<2> = AddressSpace::new(MEMORY_MAP_ADDRESS, MEMORY_MAP_SIZE);
+        let region_a = AddressRegion::new(A, PAGE_SIZE, Permissions::READ);
+        let region_b = AddressRegion::new(B, PAGE_SIZE, Permissions::READ);
+
+        m.insert(region_a, InsertFlags::empty()).unwrap();
+        m.insert(region_b, InsertFlags::empty()).unwrap();
+
+        match m.allocate(2 * PAGE_SIZE, Permissions::READ | Permissions::WRITE) {
+            Some(_) => panic!(),
+            None => (),
+        }
     }
 
     #[test]
