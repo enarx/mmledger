@@ -24,8 +24,8 @@ bitflags::bitflags! {
 #[derive(Clone, Copy, Debug, Eq)]
 #[repr(C, align(32))]
 pub struct AddressRegion {
-    address: Address,
-    length: usize,
+    addr: Address,
+    len: usize,
     permissions: Permissions,
     padding: usize,
 }
@@ -35,25 +35,25 @@ pub struct AddressRegion {
 impl AddressRegion {
     /// Create a new instance.
     #[inline]
-    pub fn new(address: Address, length: usize, permissions: Permissions) -> Self {
+    pub fn new(addr: Address, len: usize, permissions: Permissions) -> Self {
         Self {
-            address,
-            length,
+            addr,
+            len,
             permissions,
             padding: 0,
         }
     }
 
-    /// Return address.
+    /// Return address of the region.
     #[inline]
-    pub fn address(&self) -> Address {
-        self.address
+    pub fn addr(&self) -> Address {
+        self.addr
     }
 
-    /// Return length.
+    /// Return length of the region.
     #[inline]
-    pub fn length(&self) -> usize {
-        self.length
+    pub fn len(&self) -> usize {
+        self.len
     }
 
     /// Return permissions.
@@ -65,7 +65,7 @@ impl AddressRegion {
     /// Return end address of the region.
     #[inline]
     pub fn end(&self) -> Address {
-        let end_ptr = (self.address.as_ptr() as usize + self.length) as *mut c_void;
+        let end_ptr = (self.addr.as_ptr() as usize + self.len) as *mut c_void;
 
         if let Some(end_ptr) = NonNull::new(end_ptr) {
             end_ptr
@@ -77,25 +77,25 @@ impl AddressRegion {
     /// Check if the given region intersects with this.
     #[inline]
     pub fn intersects(&self, other: AddressRegion) -> bool {
-        !(self.address >= other.end() || other.address >= self.end())
+        !(self.addr >= other.end() || other.addr >= self.end())
     }
 
     /// Check if the given region is adjacent to this.
     #[inline]
     pub fn is_adjacent(&self, other: AddressRegion) -> bool {
-        self.end() == other.address || other.end() == self.address
+        self.end() == other.addr || other.end() == self.addr
     }
 }
 
 impl PartialEq for AddressRegion {
     fn eq(&self, other: &Self) -> bool {
-        self.address == other.address
+        self.addr == other.addr
     }
 }
 
 impl Ord for AddressRegion {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.address.cmp(&other.address)
+        self.addr.cmp(&other.addr)
     }
 }
 
@@ -107,8 +107,8 @@ impl PartialOrd for AddressRegion {
 
 /// A virtual memory map descriptor.
 pub struct AddressSpace<const N: usize> {
-    address: Address,
-    length: usize,
+    addr: Address,
+    len: usize,
     map: FnvIndexMap<usize, Option<AddressRegion>, N>,
 }
 
@@ -157,33 +157,29 @@ bitflags::bitflags! {
 impl<const N: usize> AddressSpace<N> {
     /// Create a new instance.
     #[inline]
-    pub fn new(address: Address, length: usize) -> Self {
+    pub fn new(addr: Address, len: usize) -> Self {
         let map = FnvIndexMap::<usize, Option<AddressRegion>, N>::default();
 
-        Self {
-            address,
-            length,
-            map,
-        }
+        Self { addr, len, map }
     }
 
     /// Return address.
     #[inline]
-    pub fn address(&self) -> Address {
-        self.address
+    pub fn addr(&self) -> Address {
+        self.addr
     }
 
     /// Return length.
     #[inline]
-    pub fn length(&self) -> usize {
-        self.length
+    pub fn len(&self) -> usize {
+        self.len
     }
 
     /// Traverse through the address space, and try to allocate an address region
     /// with the required metrics.
     pub fn alloc(
         &mut self,
-        _length: usize,
+        _len: usize,
         permissions: Permissions,
     ) -> Result<AddressRegion, AllocError> {
         // A microarchitecture constraint in SGX.
@@ -229,12 +225,10 @@ impl<const N: usize> AddressSpace<N> {
             return Err(InsertError::InvalidPermissions);
         }
 
-        let region_address_value = region.address().as_ptr() as usize;
-        let map_address_value = self.address.as_ptr() as usize;
+        let region_addr = region.addr().as_ptr() as usize;
+        let map_addr = self.addr.as_ptr() as usize;
 
-        if region_address_value < map_address_value
-            || region_address_value >= (map_address_value + self.length)
-        {
+        if region_addr < map_addr || region_addr >= (map_addr + self.len) {
             return Err(InsertError::OutOfRange);
         }
 
@@ -252,7 +246,7 @@ impl<const N: usize> AddressSpace<N> {
             // Collect adjacent memory regions, which have the same permissions.
             if old.is_adjacent(result) && old.permissions == result.permissions {
                 assert!(adj_count < 2);
-                adj_table[adj_count] = (old.address.as_ptr() as usize, old.length);
+                adj_table[adj_count] = (old.addr.as_ptr() as usize, old.len);
                 adj_count += 1;
             }
         }
@@ -263,7 +257,7 @@ impl<const N: usize> AddressSpace<N> {
 
         // Remove adjacent memory regions, and update address and len of the
         // new region.
-        for (adj_addr, adj_length) in adj_table {
+        for (adj_addr, adj_len) in adj_table {
             if adj_addr == 0 {
                 break;
             }
@@ -272,18 +266,12 @@ impl<const N: usize> AddressSpace<N> {
                 self.map.remove(&adj_addr);
             }
 
-            result.address = min(
-                result.address,
-                Address::new(adj_addr as *mut c_void).unwrap(),
-            );
-            result.length += adj_length;
+            result.addr = min(result.addr, Address::new(adj_addr as *mut c_void).unwrap());
+            result.len += adj_len;
         }
 
         if !flags.contains(InsertFlags::DRY_RUN) {
-            match self
-                .map
-                .insert(result.address.as_ptr() as usize, Some(result))
-            {
+            match self.map.insert(result.addr.as_ptr() as usize, Some(result)) {
                 Ok(None) => (),
                 _ => panic!(),
             }
@@ -303,7 +291,7 @@ mod tests {
     const MEMORY_MAP_SIZE: usize = 3 * PAGE_SIZE;
 
     #[test]
-    fn address_region_equal() {
+    fn addr_region_equal() {
         const A: Address = unsafe { Address::new_unchecked(PAGE_SIZE as *mut c_void) };
         const B: Address = unsafe { Address::new_unchecked(PAGE_SIZE as *mut c_void) };
 
@@ -314,7 +302,7 @@ mod tests {
     }
 
     #[test]
-    fn address_region_less_than() {
+    fn addr_region_less_than() {
         const A: Address = unsafe { Address::new_unchecked(PAGE_SIZE as *mut c_void) };
         const B: Address = unsafe { Address::new_unchecked(MEMORY_MAP_SIZE as *mut c_void) };
 
@@ -325,7 +313,7 @@ mod tests {
     }
 
     #[test]
-    fn address_region_not_equal() {
+    fn addr_region_not_equal() {
         const A: Address = unsafe { Address::new_unchecked(PAGE_SIZE as *mut c_void) };
         const B: Address = unsafe { Address::new_unchecked(MEMORY_MAP_SIZE as *mut c_void) };
 
@@ -336,7 +324,7 @@ mod tests {
     }
 
     #[test]
-    fn address_region_not_less_than() {
+    fn addr_region_not_less_than() {
         const A: Address = unsafe { Address::new_unchecked(MEMORY_MAP_SIZE as *mut c_void) };
         const B: Address = unsafe { Address::new_unchecked(PAGE_SIZE as *mut c_void) };
 
