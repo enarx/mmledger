@@ -8,25 +8,11 @@ use heapless::FnvIndexMap;
 
 type Address = NonNull<c_void>;
 
-bitflags::bitflags! {
-    /// Page permissions
-    #[repr(transparent)]
-    pub struct Permissions: usize {
-        /// Read access
-        const READ = 1 << 0;
-        /// Write access
-        const WRITE = 1 << 1;
-        /// Execution access
-        const EXECUTE = 1 << 2;
-    }
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(C, align(32))]
 pub struct AddressRegion {
     addr: Address,
     len: usize,
-    permissions: Permissions,
     padding: usize,
 }
 
@@ -35,11 +21,10 @@ pub struct AddressRegion {
 impl AddressRegion {
     /// Create a new instance.
     #[inline]
-    pub fn new(addr: Address, len: usize, permissions: Permissions) -> Self {
+    pub fn new(addr: Address, len: usize) -> Self {
         Self {
             addr,
             len,
-            permissions,
             padding: 0,
         }
     }
@@ -60,12 +45,6 @@ impl AddressRegion {
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.len == 0
-    }
-
-    /// Return permissions.
-    #[inline]
-    pub fn permissions(&self) -> Permissions {
-        self.permissions
     }
 
     /// Return end address of the region.
@@ -103,8 +82,6 @@ pub struct AddressSpace<const N: usize> {
 /// Error codes for `AddressSpace::set_region_permissions()`
 #[derive(Debug)]
 pub enum SetRegionPermissionsError {
-    /// Invalid permissions
-    InvalidPermissions,
     /// Not fully overlapping the existing address regions
     NotOverlapping,
 }
@@ -112,8 +89,6 @@ pub enum SetRegionPermissionsError {
 /// Error codes for `AddressSpace::insert_region()`
 #[derive(Debug)]
 pub enum InsertRegionError {
-    /// Invalid permissions
-    InvalidPermissions,
     /// Out of storage capacity
     OutOfCapacity,
     /// Not inside the address space
@@ -191,7 +166,7 @@ impl<const N: usize> AddressSpace<N> {
             let region_addr = region.addr().as_ptr() as usize;
 
             if raw_addr > region_addr + region.len() {
-                let addr_region = AddressRegion::new(addr, 4096, region.permissions());
+                let addr_region = AddressRegion::new(addr, 4096);
 
                 for (_, other) in self.map.iter() {
                     let other = other.unwrap();
@@ -204,7 +179,6 @@ impl<const N: usize> AddressSpace<N> {
                 return Ok(AddressRegion::new(
                     region.addr(),
                     raw_addr - region_addr + 4096,
-                    region.permissions(),
                 ));
             }
         }
@@ -251,11 +225,6 @@ impl<const N: usize> AddressSpace<N> {
         region: AddressRegion,
         flags: InsertFlags,
     ) -> Result<AddressRegion, InsertRegionError> {
-        // A microarchitecture constraint in SGX.
-        if (region.permissions() & Permissions::READ) != Permissions::READ {
-            return Err(InsertRegionError::InvalidPermissions);
-        }
-
         let region_addr = region.addr().as_ptr() as usize;
         let map_addr = self.addr.as_ptr() as usize;
 
@@ -279,7 +248,7 @@ impl<const N: usize> AddressSpace<N> {
             }
 
             // Collect adjacent memory regions, which have the same permissions.
-            if other.is_adjacent(result) && other.permissions == result.permissions {
+            if other.is_adjacent(result) {
                 assert!(adj_count < 2);
                 adj_table[adj_count] = (other.addr.as_ptr() as usize, other.len);
                 adj_count += 1;
@@ -323,10 +292,6 @@ impl<const N: usize> AddressSpace<N> {
         region: AddressRegion,
     ) -> Result<AddressRegion, SetRegionPermissionsError> {
         // A microarchitecture constraint in SGX.
-        if (region.permissions() & Permissions::READ) != Permissions::READ {
-            return Err(SetRegionPermissionsError::InvalidPermissions);
-        }
-
         let key = region.addr().as_ptr() as usize;
 
         if let Some(other) = self.map.get(&key) {
@@ -358,8 +323,8 @@ mod tests {
         const B: Address = unsafe { Address::new_unchecked(PAGE_SIZE as *mut c_void) };
 
         assert_eq!(
-            AddressRegion::new(A, PAGE_SIZE, Permissions::READ),
-            AddressRegion::new(B, PAGE_SIZE, Permissions::READ),
+            AddressRegion::new(A, PAGE_SIZE),
+            AddressRegion::new(B, PAGE_SIZE),
         );
     }
 
@@ -369,8 +334,8 @@ mod tests {
         const B: Address = unsafe { Address::new_unchecked(MEMORY_MAP_SIZE as *mut c_void) };
 
         assert!(
-            AddressRegion::new(A, PAGE_SIZE, Permissions::READ)
-                != AddressRegion::new(B, PAGE_SIZE, Permissions::READ)
+            AddressRegion::new(A, PAGE_SIZE)
+                != AddressRegion::new(B, PAGE_SIZE)
         );
     }
 
@@ -380,8 +345,8 @@ mod tests {
         const B: Address = unsafe { Address::new_unchecked((4 * PAGE_SIZE) as *mut c_void) };
 
         let mut m: AddressSpace<1> = AddressSpace::new(MEMORY_MAP_ADDRESS, MEMORY_MAP_SIZE);
-        let region_a = AddressRegion::new(A, PAGE_SIZE, Permissions::READ);
-        let region_b = AddressRegion::new(A, 3 * PAGE_SIZE, Permissions::READ);
+        let region_a = AddressRegion::new(A, PAGE_SIZE);
+        let region_b = AddressRegion::new(A, 3 * PAGE_SIZE);
 
         m.insert_region(region_a, InsertFlags::empty()).unwrap();
         let region_c = match m.extend_region(B) {
@@ -399,8 +364,8 @@ mod tests {
         const C: Address = unsafe { Address::new_unchecked((3 * PAGE_SIZE) as *mut c_void) };
 
         let mut m: AddressSpace<2> = AddressSpace::new(MEMORY_MAP_ADDRESS, MEMORY_MAP_SIZE);
-        let region_a = AddressRegion::new(A, PAGE_SIZE, Permissions::READ);
-        let region_b = AddressRegion::new(B, PAGE_SIZE, Permissions::READ);
+        let region_a = AddressRegion::new(A, PAGE_SIZE);
+        let region_b = AddressRegion::new(B, PAGE_SIZE);
 
         m.insert_region(region_a, InsertFlags::empty()).unwrap();
         m.insert_region(region_b, InsertFlags::empty()).unwrap();
@@ -419,8 +384,8 @@ mod tests {
         const B: Address = unsafe { Address::new_unchecked((4 * PAGE_SIZE) as *mut c_void) };
 
         let mut m: AddressSpace<2> = AddressSpace::new(MEMORY_MAP_ADDRESS, MEMORY_MAP_SIZE);
-        let region_a = AddressRegion::new(A, PAGE_SIZE, Permissions::READ);
-        let region_b = AddressRegion::new(B, PAGE_SIZE, Permissions::READ);
+        let region_a = AddressRegion::new(A, PAGE_SIZE);
+        let region_b = AddressRegion::new(B, PAGE_SIZE);
 
         m.insert_region(region_a, InsertFlags::empty()).unwrap();
         m.insert_region(region_b, InsertFlags::empty()).unwrap();
@@ -436,14 +401,14 @@ mod tests {
         const A: Address = unsafe { Address::new_unchecked((2 * PAGE_SIZE) as *mut c_void) };
 
         let mut m: AddressSpace<1> = AddressSpace::new(MEMORY_MAP_ADDRESS, MEMORY_MAP_SIZE);
-        let region = AddressRegion::new(A, PAGE_SIZE, Permissions::READ);
+        let region = AddressRegion::new(A, PAGE_SIZE);
 
         let region = match m.insert_region(region, InsertFlags::empty()) {
             Ok(region) => region,
             _ => panic!(),
         };
 
-        assert_eq!(region, AddressRegion::new(A, PAGE_SIZE, Permissions::READ));
+        assert_eq!(region, AddressRegion::new(A, PAGE_SIZE));
     }
 
     #[test]
@@ -452,8 +417,8 @@ mod tests {
         const B: Address = unsafe { Address::new_unchecked((3 * PAGE_SIZE) as *mut c_void) };
 
         let mut m: AddressSpace<2> = AddressSpace::new(MEMORY_MAP_ADDRESS, MEMORY_MAP_SIZE);
-        let region_a = AddressRegion::new(A, PAGE_SIZE, Permissions::READ);
-        let region_b = AddressRegion::new(B, PAGE_SIZE, Permissions::READ);
+        let region_a = AddressRegion::new(A, PAGE_SIZE);
+        let region_b = AddressRegion::new(B, PAGE_SIZE);
 
         m.insert_region(region_a, InsertFlags::empty()).unwrap();
 
@@ -464,7 +429,7 @@ mod tests {
 
         assert_eq!(
             region,
-            AddressRegion::new(A, 2 * PAGE_SIZE, Permissions::READ)
+            AddressRegion::new(A, 2 * PAGE_SIZE)
         );
     }
 
@@ -473,7 +438,7 @@ mod tests {
         const A: Address = unsafe { Address::new_unchecked((5 * PAGE_SIZE) as *mut c_void) };
 
         let mut m: AddressSpace<2> = AddressSpace::new(MEMORY_MAP_ADDRESS, MEMORY_MAP_SIZE);
-        let region_a = AddressRegion::new(A, PAGE_SIZE, Permissions::READ);
+        let region_a = AddressRegion::new(A, PAGE_SIZE);
 
         match m.insert_region(region_a, InsertFlags::DRY_RUN) {
             Err(InsertRegionError::OutOfRange) => (),
@@ -487,8 +452,8 @@ mod tests {
         const B: Address = unsafe { Address::new_unchecked((2 * PAGE_SIZE) as *mut c_void) };
 
         let mut m: AddressSpace<2> = AddressSpace::new(MEMORY_MAP_ADDRESS, MEMORY_MAP_SIZE);
-        let region_a = AddressRegion::new(A, PAGE_SIZE, Permissions::READ);
-        let region_b = AddressRegion::new(B, PAGE_SIZE, Permissions::READ);
+        let region_a = AddressRegion::new(A, PAGE_SIZE);
+        let region_b = AddressRegion::new(B, PAGE_SIZE);
 
         m.insert_region(region_a, InsertFlags::empty()).unwrap();
         match m.insert_region(region_b, InsertFlags::DRY_RUN) {
@@ -503,8 +468,8 @@ mod tests {
         const B: Address = unsafe { Address::new_unchecked((4 * PAGE_SIZE) as *mut c_void) };
 
         let mut m: AddressSpace<2> = AddressSpace::new(MEMORY_MAP_ADDRESS, MEMORY_MAP_SIZE);
-        let region_a = AddressRegion::new(A, PAGE_SIZE, Permissions::READ);
-        let region_b = AddressRegion::new(B, PAGE_SIZE, Permissions::READ);
+        let region_a = AddressRegion::new(A, PAGE_SIZE);
+        let region_b = AddressRegion::new(B, PAGE_SIZE);
 
         m.insert_region(region_a, InsertFlags::empty()).unwrap();
         let region_c = match m.insert_region(region_b, InsertFlags::DRY_RUN) {
@@ -516,26 +481,13 @@ mod tests {
     }
 
     #[test]
-    fn insert_invalid_permissions() {
-        const A: Address = unsafe { Address::new_unchecked((2 * PAGE_SIZE) as *mut c_void) };
-
-        let mut m: AddressSpace<1> = AddressSpace::new(MEMORY_MAP_ADDRESS, MEMORY_MAP_SIZE);
-        let region = AddressRegion::new(A, PAGE_SIZE, Permissions::empty());
-
-        match m.insert_region(region, InsertFlags::DRY_RUN) {
-            Err(InsertRegionError::InvalidPermissions) => (),
-            _ => panic!(),
-        }
-    }
-
-    #[test]
     fn insert_overflow() {
         const A: Address = unsafe { Address::new_unchecked((2 * PAGE_SIZE) as *mut c_void) };
         const B: Address = unsafe { Address::new_unchecked((4 * PAGE_SIZE) as *mut c_void) };
 
         let mut m: AddressSpace<1> = AddressSpace::new(MEMORY_MAP_ADDRESS, MEMORY_MAP_SIZE);
-        let region_a = AddressRegion::new(A, PAGE_SIZE, Permissions::READ);
-        let region_b = AddressRegion::new(B, PAGE_SIZE, Permissions::READ);
+        let region_a = AddressRegion::new(A, PAGE_SIZE);
+        let region_b = AddressRegion::new(B, PAGE_SIZE);
 
         m.insert_region(region_a, InsertFlags::empty()).unwrap();
         match m.insert_region(region_b, InsertFlags::DRY_RUN) {
@@ -550,8 +502,8 @@ mod tests {
         const B: Address = unsafe { Address::new_unchecked((2 * PAGE_SIZE) as *mut c_void) };
 
         let mut m: AddressSpace<1> = AddressSpace::new(MEMORY_MAP_ADDRESS, MEMORY_MAP_SIZE);
-        let region_a = AddressRegion::new(A, PAGE_SIZE, Permissions::READ);
-        let region_b = AddressRegion::new(B, PAGE_SIZE, Permissions::READ | Permissions::WRITE);
+        let region_a = AddressRegion::new(A, PAGE_SIZE);
+        let region_b = AddressRegion::new(B, PAGE_SIZE);
 
         m.insert_region(region_a, InsertFlags::empty()).unwrap();
         let region_c = match m.set_region_permissions(region_b) {
@@ -568,8 +520,8 @@ mod tests {
         const B: Address = unsafe { Address::new_unchecked((3 * PAGE_SIZE) as *mut c_void) };
 
         let mut m: AddressSpace<1> = AddressSpace::new(MEMORY_MAP_ADDRESS, MEMORY_MAP_SIZE);
-        let region_a = AddressRegion::new(A, PAGE_SIZE, Permissions::READ);
-        let region_b = AddressRegion::new(B, PAGE_SIZE, Permissions::READ | Permissions::WRITE);
+        let region_a = AddressRegion::new(A, PAGE_SIZE);
+        let region_b = AddressRegion::new(B, PAGE_SIZE);
 
         m.insert_region(region_a, InsertFlags::empty()).unwrap();
         match m.set_region_permissions(region_b) {
