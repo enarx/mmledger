@@ -61,7 +61,7 @@ impl AddressRegion {
 
 /// A virtual memory map descriptor.
 pub struct AddressSpace<const N: usize> {
-    addr: Address,
+    addr: usize,
     len: usize,
     map: FnvIndexMap<usize, Option<AddressRegion>, N>,
 }
@@ -94,15 +94,17 @@ impl<const N: usize> AddressSpace<N> {
     /// Create a new instance.
     #[inline]
     pub fn new(addr: Address, len: usize) -> Self {
+        let addr = addr.as_ptr() as usize;
+        assert_eq!(addr & (PAGE_SIZE - 1), 0);
+        assert_eq!(len & (PAGE_SIZE - 1), 0);
         let map = FnvIndexMap::<usize, Option<AddressRegion>, N>::default();
-
         Self { addr, len, map }
     }
 
     /// Return start address.
     #[inline]
     pub fn addr(&self) -> Address {
-        self.addr
+        Address::new(self.addr as *mut c_void).unwrap()
     }
 
     /// Return length.
@@ -133,9 +135,8 @@ impl<const N: usize> AddressSpace<N> {
     pub fn extend_region(&mut self, addr: Address) -> Result<AddressRegion, AddressSpaceError> {
         let probe = AddressRegion::new(addr, PAGE_SIZE);
         let addr = addr.as_ptr() as usize;
-        let space_addr = self.addr.as_ptr() as usize;
 
-        if addr < space_addr || addr >= (space_addr + self.len) {
+        if addr < self.addr || addr >= (self.addr + self.len) {
             return Err(AddressSpaceError::Overflow);
         }
 
@@ -187,9 +188,8 @@ impl<const N: usize> AddressSpace<N> {
         flags: AddressSpaceFlags,
     ) -> Result<AddressRegion, AddressSpaceError> {
         let region_addr = region.addr().as_ptr() as usize;
-        let map_addr = self.addr.as_ptr() as usize;
 
-        if region_addr < map_addr || region_addr >= (map_addr + self.len) {
+        if region_addr < self.addr || region_addr >= (self.addr + self.len) {
             return Err(AddressSpaceError::Overflow);
         }
 
@@ -243,8 +243,7 @@ impl<const N: usize> AddressSpace<N> {
 
     /// Find space for a free region.
     fn find_free_space(&mut self, len: usize) -> Option<Address> {
-        let start = self.addr.as_ptr() as usize;
-        let mut log: [(usize, usize); 2] = [(start, start), (0, 0)];
+        let mut log: [(usize, usize); 2] = [(self.addr, self.addr), (0, 0)];
         let mut prev = 0;
 
         assert_eq!(len & (PAGE_SIZE - 1), 0);
