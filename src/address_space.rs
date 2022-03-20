@@ -25,6 +25,7 @@ impl AddressRegion {
     pub fn new(addr: Address, len: usize) -> Self {
         let addr = addr.as_ptr() as usize;
         assert_eq!(addr & (PAGE_SIZE - 1), 0);
+        assert_eq!(len & (PAGE_SIZE - 1), 0);
         Self {
             addr,
             len,
@@ -92,8 +93,6 @@ pub enum InsertRegionError {
     OutOfRange,
     /// Overlapping with the existing address spaces
     Overlapping,
-    /// Not aligned to page boundaries
-    Unaligned,
 }
 
 /// Error codes for `AddressSpace::insert_region()`
@@ -103,8 +102,6 @@ pub enum ExtendRegionError {
     OutOfRange,
     /// Overlapping with the existing address spaces
     Overlapping,
-    /// Not aligned to page boundaries
-    Unaligned,
     /// No regions to extend
     NoRegions,
 }
@@ -154,16 +151,12 @@ impl<const N: usize> AddressSpace<N> {
             return Err(ExtendRegionError::OutOfRange);
         }
 
-        if (raw_addr & 4095) != 0 {
-            return Err(ExtendRegionError::Unaligned);
-        }
-
         for (_, region) in self.map.iter() {
             let region = region.unwrap();
             let region_addr = region.addr().as_ptr() as usize;
 
             if raw_addr > region_addr + region.len() {
-                let addr_region = AddressRegion::new(addr, 4096);
+                let addr_region = AddressRegion::new(addr, PAGE_SIZE);
 
                 for (_, other) in self.map.iter() {
                     let other = other.unwrap();
@@ -175,7 +168,7 @@ impl<const N: usize> AddressSpace<N> {
                 self.map.remove(&region_addr).unwrap();
                 return Ok(AddressRegion::new(
                     region.addr(),
-                    raw_addr - region_addr + 4096,
+                    raw_addr - region_addr + PAGE_SIZE,
                 ));
             }
         }
@@ -190,9 +183,7 @@ impl<const N: usize> AddressSpace<N> {
         let mut log: [(usize, usize); 2] = [(start, start), (0, 0)];
         let mut prev = 0;
 
-        if (len & 4095) != 0 {
-            return None;
-        }
+        assert_eq!(len & (PAGE_SIZE - 1), 0);
 
         for (_, region) in self.map.iter() {
             let region = region.unwrap();
@@ -227,10 +218,6 @@ impl<const N: usize> AddressSpace<N> {
 
         if region_addr < map_addr || region_addr >= (map_addr + self.len) {
             return Err(InsertRegionError::OutOfRange);
-        }
-
-        if (region_addr & 4095) != 0 || (region.len() & 4095) != 0 {
-            return Err(InsertRegionError::Unaligned);
         }
 
         let mut result = region;
