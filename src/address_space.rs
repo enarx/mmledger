@@ -68,23 +68,14 @@ pub struct AddressSpace<const N: usize> {
 
 /// Error codes for `AddressSpace::insert_region()`
 #[derive(Debug)]
-pub enum InsertRegionError {
+pub enum AddressSpaceError {
     /// Out of storage capacity
     OutOfCapacity,
     /// Not inside the address space
     OutOfRange,
     /// Overlapping with the existing address spaces
     Overlapping,
-}
-
-/// Error codes for `AddressSpace::insert_region()`
-#[derive(Debug)]
-pub enum ExtendRegionError {
-    /// Not inside the address space
-    OutOfRange,
-    /// Overlapping with the existing address spaces
-    Overlapping,
-    /// No regions to extend
+    /// No regions
     NoRegions,
 }
 
@@ -125,13 +116,13 @@ impl<const N: usize> AddressSpace<N> {
     }
 
     /// Extend region. Returns the sub-region that extends the region.
-    pub fn extend_region(&mut self, addr: Address) -> Result<AddressRegion, ExtendRegionError> {
+    pub fn extend_region(&mut self, addr: Address) -> Result<AddressRegion, AddressSpaceError> {
         let probe = AddressRegion::new(addr, PAGE_SIZE);
         let addr = addr.as_ptr() as usize;
         let space_addr = self.addr.as_ptr() as usize;
 
         if addr < space_addr || addr >= (space_addr + self.len) {
-            return Err(ExtendRegionError::OutOfRange);
+            return Err(AddressSpaceError::OutOfRange);
         }
 
         let mut region: Option<AddressRegion> = None;
@@ -142,14 +133,14 @@ impl<const N: usize> AddressSpace<N> {
             if addr > (other.addr + other.len) {
                 region = Some(other);
             } else if probe.intersects(other) {
-                return Err(ExtendRegionError::Overlapping);
+                return Err(AddressSpaceError::Overlapping);
             } else if region != None {
                 break;
             }
         }
 
         if region == None {
-            return Err(ExtendRegionError::NoRegions);
+            return Err(AddressSpaceError::NoRegions);
         }
 
         let region = region.unwrap();
@@ -205,12 +196,12 @@ impl<const N: usize> AddressSpace<N> {
         &mut self,
         region: AddressRegion,
         flags: InsertFlags,
-    ) -> Result<AddressRegion, InsertRegionError> {
+    ) -> Result<AddressRegion, AddressSpaceError> {
         let region_addr = region.addr().as_ptr() as usize;
         let map_addr = self.addr.as_ptr() as usize;
 
         if region_addr < map_addr || region_addr >= (map_addr + self.len) {
-            return Err(InsertRegionError::OutOfRange);
+            return Err(AddressSpaceError::OutOfRange);
         }
 
         let mut result = region;
@@ -221,7 +212,7 @@ impl<const N: usize> AddressSpace<N> {
             let other = other.unwrap();
 
             if other.intersects(result) {
-                return Err(InsertRegionError::Overlapping);
+                return Err(AddressSpaceError::Overlapping);
             }
 
             // Collect adjacent memory regions, which have the same permissions.
@@ -233,7 +224,7 @@ impl<const N: usize> AddressSpace<N> {
         }
 
         if (self.map.len() - adj_count) == N {
-            return Err(InsertRegionError::OutOfCapacity);
+            return Err(AddressSpaceError::OutOfCapacity);
         }
 
         // Remove adjacent memory regions, and update address and len of the
@@ -392,7 +383,7 @@ mod tests {
         let region_a = AddressRegion::new(A, PAGE_SIZE);
 
         match m.insert_region(region_a, InsertFlags::DRY_RUN) {
-            Err(InsertRegionError::OutOfRange) => (),
+            Err(AddressSpaceError::OutOfRange) => (),
             _ => panic!(),
         }
     }
@@ -408,7 +399,7 @@ mod tests {
 
         m.insert_region(region_a, InsertFlags::empty()).unwrap();
         match m.insert_region(region_b, InsertFlags::DRY_RUN) {
-            Err(InsertRegionError::Overlapping) => (),
+            Err(AddressSpaceError::Overlapping) => (),
             _ => panic!(),
         }
     }
@@ -442,7 +433,7 @@ mod tests {
 
         m.insert_region(region_a, InsertFlags::empty()).unwrap();
         match m.insert_region(region_b, InsertFlags::DRY_RUN) {
-            Err(InsertRegionError::OutOfCapacity) => (),
+            Err(AddressSpaceError::OutOfCapacity) => (),
             _ => panic!(),
         }
     }
