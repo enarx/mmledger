@@ -159,9 +159,8 @@ impl<const N: usize> AddressSpace<N> {
     }
 
     /// Loop through the address space in the minimum address order, and try to
-    /// find a region with the required metrics If enough space is found, place
-    /// the region adjacent to the region that follows it.
-    pub fn allocate(&mut self, size: usize, permissions: Permissions) -> Option<AddressRegion> {
+    /// find spece for a region with the required metrics.
+    pub fn allocate(&mut self, size: usize) -> Option<Address> {
         let start = self.addr.as_ptr() as usize;
         let mut log: [(usize, usize); 2] = [(start, start), (0, 0)];
         let mut prev = 0;
@@ -177,9 +176,7 @@ impl<const N: usize> AddressSpace<N> {
 
             let distance = log[next].0 - log[prev].1;
             if distance >= size {
-                let addr = Address::new((log[next].0 - size) as *mut c_void).unwrap();
-
-                return Some(AddressRegion::new(addr, size, permissions));
+                return Some(Address::new((log[next].0 - size) as *mut c_void).unwrap());
             }
 
             prev = next;
@@ -328,15 +325,12 @@ mod tests {
         m.insert(region_a, InsertFlags::empty()).unwrap();
         m.insert(region_b, InsertFlags::empty()).unwrap();
 
-        let region_c = match m.allocate(PAGE_SIZE, Permissions::READ | Permissions::WRITE) {
+        let addr = match m.allocate(PAGE_SIZE) {
             Some(r) => r,
             None => panic!(),
         };
 
-        assert_eq!(
-            region_c,
-            AddressRegion::new(C, PAGE_SIZE, Permissions::READ | Permissions::WRITE)
-        );
+        assert_eq!(addr, C);
     }
 
     #[test]
@@ -351,7 +345,7 @@ mod tests {
         m.insert(region_a, InsertFlags::empty()).unwrap();
         m.insert(region_b, InsertFlags::empty()).unwrap();
 
-        match m.allocate(2 * PAGE_SIZE, Permissions::READ | Permissions::WRITE) {
+        match m.allocate(2 * PAGE_SIZE) {
             Some(_) => panic!(),
             None => (),
         }
