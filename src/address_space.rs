@@ -68,7 +68,7 @@ pub struct AddressSpace<const N: usize> {
 
 /// Error codes for `AddressSpace::insert_region()`
 #[derive(Debug)]
-pub enum RegionError {
+pub enum AddressSpaceError {
     /// Out of storage capacity
     OutOfCapacity,
     /// No space for the region
@@ -122,21 +122,21 @@ impl<const N: usize> AddressSpace<N> {
         &mut self,
         len: usize,
         flags: RegionFlags,
-    ) -> Result<AddressRegion, RegionError> {
+    ) -> Result<AddressRegion, AddressSpaceError> {
         match self.find_free_space(len) {
             Some(addr) => self.insert_region(AddressRegion::new(addr, len), flags),
-            None => Err(RegionError::OutOfSpace),
+            None => Err(AddressSpaceError::OutOfSpace),
         }
     }
 
     /// Extend region. Returns the sub-region that extends the region.
-    pub fn extend_region(&mut self, addr: Address) -> Result<AddressRegion, RegionError> {
+    pub fn extend_region(&mut self, addr: Address) -> Result<AddressRegion, AddressSpaceError> {
         let probe = AddressRegion::new(addr, PAGE_SIZE);
         let addr = addr.as_ptr() as usize;
         let space_addr = self.addr.as_ptr() as usize;
 
         if addr < space_addr || addr >= (space_addr + self.len) {
-            return Err(RegionError::Overflow);
+            return Err(AddressSpaceError::Overflow);
         }
 
         let mut region: Option<AddressRegion> = None;
@@ -147,14 +147,14 @@ impl<const N: usize> AddressSpace<N> {
             if addr > (other.addr + other.len) {
                 region = Some(other);
             } else if probe.intersects(other) {
-                return Err(RegionError::Overlap);
+                return Err(AddressSpaceError::Overlap);
             } else if region != None {
                 break;
             }
         }
 
         if region == None {
-            return Err(RegionError::NoRegions);
+            return Err(AddressSpaceError::NoRegions);
         }
 
         let region = region.unwrap();
@@ -185,12 +185,12 @@ impl<const N: usize> AddressSpace<N> {
         &mut self,
         region: AddressRegion,
         flags: RegionFlags,
-    ) -> Result<AddressRegion, RegionError> {
+    ) -> Result<AddressRegion, AddressSpaceError> {
         let region_addr = region.addr().as_ptr() as usize;
         let map_addr = self.addr.as_ptr() as usize;
 
         if region_addr < map_addr || region_addr >= (map_addr + self.len) {
-            return Err(RegionError::Overflow);
+            return Err(AddressSpaceError::Overflow);
         }
 
         let mut result = region;
@@ -201,7 +201,7 @@ impl<const N: usize> AddressSpace<N> {
             let other = other.unwrap();
 
             if other.intersects(result) {
-                return Err(RegionError::Overlap);
+                return Err(AddressSpaceError::Overlap);
             }
 
             // Collect adjacent memory regions, which have the same permissions.
@@ -213,7 +213,7 @@ impl<const N: usize> AddressSpace<N> {
         }
 
         if (self.map.len() - adj_count) == N {
-            return Err(RegionError::OutOfCapacity);
+            return Err(AddressSpaceError::OutOfCapacity);
         }
 
         // Remove adjacent memory regions, and update address and len of the
@@ -397,7 +397,7 @@ mod tests {
         let region_a = AddressRegion::new(A, PAGE_SIZE);
 
         match m.insert_region(region_a, RegionFlags::DRY_RUN) {
-            Err(RegionError::Overflow) => (),
+            Err(AddressSpaceError::Overflow) => (),
             _ => panic!(),
         }
     }
@@ -413,7 +413,7 @@ mod tests {
 
         m.insert_region(region_a, RegionFlags::empty()).unwrap();
         match m.insert_region(region_b, RegionFlags::DRY_RUN) {
-            Err(RegionError::Overlap) => (),
+            Err(AddressSpaceError::Overlap) => (),
             _ => panic!(),
         }
     }
@@ -447,7 +447,7 @@ mod tests {
 
         m.insert_region(region_a, RegionFlags::empty()).unwrap();
         match m.insert_region(region_b, RegionFlags::DRY_RUN) {
-            Err(RegionError::OutOfCapacity) => (),
+            Err(AddressSpaceError::OutOfCapacity) => (),
             _ => panic!(),
         }
     }
