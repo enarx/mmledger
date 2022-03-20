@@ -105,8 +105,6 @@ pub struct AddressSpace<const N: usize> {
 pub enum SetPermissionsError {
     /// Invalid permissions
     InvalidPermissions,
-    /// Out of storage capacity
-    OutOfCapacity,
     /// Not fully overlapping the existing address regions
     NotOverlapping,
 }
@@ -190,7 +188,9 @@ impl<const N: usize> AddressSpace<N> {
         None
     }
 
-    /// Set permissions for an address region.
+    /// Set permissions for an address region. Supports *currently* only
+    /// changing permissions to regions that match exactly: neither partial
+    /// overlaps nor overlaps that span multiple regions are supported.
     pub fn set_permissions(
         &mut self,
         region: AddressRegion,
@@ -200,17 +200,24 @@ impl<const N: usize> AddressSpace<N> {
             return Err(SetPermissionsError::InvalidPermissions);
         }
 
-        // TODO
-        // Iterate address regions, and find the first hole with enough space.
-        // Create an address region, and return it to the caller.
+        let key = region.addr().as_ptr() as usize;
 
-        Err(SetPermissionsError::OutOfCapacity)
+        if let Some(other) = self.map.get(&key) {
+            let other = other.unwrap();
+
+            if region.len() == other.len() {
+                self.map.remove(&key).unwrap();
+                self.map.insert(key, Some(region)).unwrap();
+                return Ok(region);
+            }
+        }
+
+        Err(SetPermissionsError::NotOverlapping)
     }
 
     /// Check that the given memory region is disjoint and there is enough space
     /// in the ledger, and the permissions are legit. Add memory region to the
-    /// database. Overlapping address regions are not supported (for the time
-    /// being).
+    /// database. Overlapping address regions are not *currently* supported.
     pub fn insert(
         &mut self,
         region: AddressRegion,
@@ -232,17 +239,17 @@ impl<const N: usize> AddressSpace<N> {
         let mut adj_table: [(usize, usize); 2] = [(0, 0); 2];
         let mut adj_count: usize = 0;
 
-        for (_, old) in self.map.iter() {
-            let old = old.unwrap();
+        for (_, other) in self.map.iter() {
+            let other = other.unwrap();
 
-            if old.intersects(result) {
+            if other.intersects(result) {
                 return Err(InsertError::Overlapping);
             }
 
             // Collect adjacent memory regions, which have the same permissions.
-            if old.is_adjacent(result) && old.permissions == result.permissions {
+            if other.is_adjacent(result) && other.permissions == result.permissions {
                 assert!(adj_count < 2);
-                adj_table[adj_count] = (old.addr.as_ptr() as usize, old.len);
+                adj_table[adj_count] = (other.addr.as_ptr() as usize, other.len);
                 adj_count += 1;
             }
         }
@@ -459,6 +466,40 @@ mod tests {
         m.insert(region_a, InsertFlags::empty()).unwrap();
         match m.insert(region_b, InsertFlags::DRY_RUN) {
             Err(InsertError::OutOfCapacity) => (),
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn set_permissions() {
+        const A: Address = unsafe { Address::new_unchecked((2 * PAGE_SIZE) as *mut c_void) };
+        const B: Address = unsafe { Address::new_unchecked((2 * PAGE_SIZE) as *mut c_void) };
+
+        let mut m: AddressSpace<1> = AddressSpace::new(MEMORY_MAP_ADDRESS, MEMORY_MAP_SIZE);
+        let region_a = AddressRegion::new(A, PAGE_SIZE, Permissions::READ);
+        let region_b = AddressRegion::new(B, PAGE_SIZE, Permissions::READ | Permissions::WRITE);
+
+        m.insert(region_a, InsertFlags::empty()).unwrap();
+        let region_c = match m.set_permissions(region_b) {
+            Ok(region) => region,
+            _ => panic!(),
+        };
+
+        assert_eq!(region_c, region_b);
+    }
+
+    #[test]
+    fn set_permissions_no_overlap() {
+        const A: Address = unsafe { Address::new_unchecked((2 * PAGE_SIZE) as *mut c_void) };
+        const B: Address = unsafe { Address::new_unchecked((3 * PAGE_SIZE) as *mut c_void) };
+
+        let mut m: AddressSpace<1> = AddressSpace::new(MEMORY_MAP_ADDRESS, MEMORY_MAP_SIZE);
+        let region_a = AddressRegion::new(A, PAGE_SIZE, Permissions::READ);
+        let region_b = AddressRegion::new(B, PAGE_SIZE, Permissions::READ | Permissions::WRITE);
+
+        m.insert(region_a, InsertFlags::empty()).unwrap();
+        match m.set_permissions(region_b) {
+            Err(SetPermissionsError::NotOverlapping) => (),
             _ => panic!(),
         }
     }
