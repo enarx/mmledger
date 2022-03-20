@@ -160,7 +160,7 @@ impl<const N: usize> AddressSpace<N> {
 
     /// Loop through the address space in the minimum address order, and try to
     /// find spece for a region with the required metrics.
-    pub fn find_free_region(&mut self, size: usize) -> Option<Address> {
+    pub fn find_free_space(&mut self, size: usize) -> Option<Address> {
         let start = self.addr.as_ptr() as usize;
         let mut log: [(usize, usize); 2] = [(start, start), (0, 0)];
         let mut prev = 0;
@@ -313,7 +313,7 @@ mod tests {
     }
 
     #[test]
-    fn find_free_region_success() {
+    fn find_free_space_success() {
         const A: Address = unsafe { Address::new_unchecked((2 * PAGE_SIZE) as *mut c_void) };
         const B: Address = unsafe { Address::new_unchecked((4 * PAGE_SIZE) as *mut c_void) };
         const C: Address = unsafe { Address::new_unchecked((3 * PAGE_SIZE) as *mut c_void) };
@@ -325,7 +325,7 @@ mod tests {
         m.insert_region(region_a, InsertFlags::empty()).unwrap();
         m.insert_region(region_b, InsertFlags::empty()).unwrap();
 
-        let addr = match m.find_free_region(PAGE_SIZE) {
+        let addr = match m.find_free_space(PAGE_SIZE) {
             Some(r) => r,
             None => panic!(),
         };
@@ -334,7 +334,7 @@ mod tests {
     }
 
     #[test]
-    fn find_free_region_failure() {
+    fn find_free_space_failure() {
         const A: Address = unsafe { Address::new_unchecked((2 * PAGE_SIZE) as *mut c_void) };
         const B: Address = unsafe { Address::new_unchecked((4 * PAGE_SIZE) as *mut c_void) };
 
@@ -345,7 +345,7 @@ mod tests {
         m.insert_region(region_a, InsertFlags::empty()).unwrap();
         m.insert_region(region_b, InsertFlags::empty()).unwrap();
 
-        match m.find_free_region(2 * PAGE_SIZE) {
+        match m.find_free_space(2 * PAGE_SIZE) {
             Some(_) => panic!(),
             None => (),
         }
