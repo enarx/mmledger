@@ -15,7 +15,6 @@ const PAGE_SIZE: usize = 4096;
 pub struct AddressRegion {
     addr: usize,
     len: usize,
-    padding: usize,
 }
 
 /// Region of an address space
@@ -26,11 +25,7 @@ impl AddressRegion {
         let addr = addr.as_ptr() as usize;
         assert_eq!(addr & (PAGE_SIZE - 1), 0);
         assert_eq!(len & (PAGE_SIZE - 1), 0);
-        Self {
-            addr,
-            len,
-            padding: 0,
-        }
+        Self { addr, len }
     }
 
     /// Return start address.
@@ -49,12 +44,6 @@ impl AddressRegion {
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.len == 0
-    }
-
-    /// Return end address.
-    #[inline]
-    pub fn end(&self) -> Address {
-        Address::new((self.addr + self.len) as *mut c_void).unwrap()
     }
 
     /// Check if other region intersects.
@@ -135,38 +124,54 @@ impl<const N: usize> AddressSpace<N> {
         self.len == 0
     }
 
-    /// Extend region.
+    /// Extend region. Returns the sub-region that extends the region.
     pub fn extend_region(&mut self, addr: Address) -> Result<AddressRegion, ExtendRegionError> {
-        let raw_addr = addr.as_ptr() as usize;
+        let probe = AddressRegion::new(addr, PAGE_SIZE);
+        let addr = addr.as_ptr() as usize;
         let space_addr = self.addr.as_ptr() as usize;
 
-        if raw_addr < space_addr || raw_addr >= (space_addr + self.len) {
+        if addr < space_addr || addr >= (space_addr + self.len) {
             return Err(ExtendRegionError::OutOfRange);
         }
 
-        for (_, region) in self.map.iter() {
-            let region = region.unwrap();
-            let region_addr = region.addr().as_ptr() as usize;
+        let mut region: Option<AddressRegion> = None;
 
-            if raw_addr > region_addr + region.len() {
-                let addr_region = AddressRegion::new(addr, PAGE_SIZE);
-
-                for (_, other) in self.map.iter() {
-                    let other = other.unwrap();
-                    if addr_region.intersects(other) {
-                        return Err(ExtendRegionError::Overlapping);
-                    }
-                }
-
-                self.map.remove(&region_addr).unwrap();
-                return Ok(AddressRegion::new(
-                    region.addr(),
-                    raw_addr - region_addr + PAGE_SIZE,
-                ));
+        // Find the prepending region.
+        for (_, other) in self.map.iter() {
+            let other = other.unwrap();
+            if addr > (other.addr + other.len) {
+                region = Some(other);
+            } else if probe.intersects(other) {
+                return Err(ExtendRegionError::Overlapping);
+            } else if region != None {
+                break;
             }
         }
 
-        Err(ExtendRegionError::OutOfRange)
+        if region == None {
+            return Err(ExtendRegionError::NoRegions);
+        }
+
+        let region = region.unwrap();
+
+        // Replace the existing region with the extended region.
+        self.map.remove(&region.addr).unwrap();
+        self.map
+            .insert(
+                region.addr,
+                Some(AddressRegion {
+                    addr: region.addr,
+                    len: addr - region.addr,
+                }),
+            )
+            .unwrap();
+
+        // Return the subregion that extends the existing region.
+        let region_end = region.addr + region.len;
+        Ok(AddressRegion {
+            addr: region_end,
+            len: addr - region_end,
+        })
     }
 
     /// Find space for a free region.
@@ -181,10 +186,7 @@ impl<const N: usize> AddressSpace<N> {
             let region = region.unwrap();
             let next = (prev + 1) & 1;
 
-            log[next] = (
-                region.addr().as_ptr() as usize,
-                region.end().as_ptr() as usize,
-            );
+            log[next] = (region.addr, region.addr + region.len);
 
             let distance = log[next].0 - log[prev].1;
             if distance >= len {
@@ -292,18 +294,21 @@ mod tests {
     fn extend_region() {
         const A: Address = unsafe { Address::new_unchecked((2 * PAGE_SIZE) as *mut c_void) };
         const B: Address = unsafe { Address::new_unchecked((4 * PAGE_SIZE) as *mut c_void) };
+        const E: Address = unsafe { Address::new_unchecked((3 * PAGE_SIZE) as *mut c_void) };
 
         let mut m: AddressSpace<1> = AddressSpace::new(MEMORY_MAP_ADDRESS, MEMORY_MAP_SIZE);
         let region_a = AddressRegion::new(A, PAGE_SIZE);
-        let region_b = AddressRegion::new(A, 3 * PAGE_SIZE);
+        let expected = AddressRegion::new(E, PAGE_SIZE);
+
+        println!("{:?}", region_a);
 
         m.insert_region(region_a, InsertFlags::empty()).unwrap();
-        let region_c = match m.extend_region(B) {
+        let result = match m.extend_region(B) {
             Ok(region) => region,
             _ => panic!(),
         };
 
-        assert_eq!(region_c, region_b);
+        assert_eq!(result, expected);
     }
 
     #[test]
