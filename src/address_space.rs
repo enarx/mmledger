@@ -68,13 +68,15 @@ pub struct AddressSpace<const N: usize> {
 
 /// Error codes for `AddressSpace::insert_region()`
 #[derive(Debug)]
-pub enum AddressSpaceError {
+pub enum RegionError {
     /// Out of storage capacity
     OutOfCapacity,
+    /// No space for the region
+    OutOfSpace,
     /// Not inside the address space
-    OutOfRange,
-    /// Overlapping with the existing address spaces
-    Overlapping,
+    Overflow,
+    /// Overlap with the existing regions
+    Overlap,
     /// No regions
     NoRegions,
 }
@@ -82,7 +84,7 @@ pub enum AddressSpaceError {
 bitflags::bitflags! {
     /// Flags for mmap
     #[repr(transparent)]
-    pub struct InsertFlags: usize {
+    pub struct RegionFlags: usize {
         /// Do not commit mmap
         const DRY_RUN = 1 << 0;
     }
@@ -115,14 +117,26 @@ impl<const N: usize> AddressSpace<N> {
         self.len == 0
     }
 
+    /// Allocate region.
+    pub fn allocate_region(
+        &mut self,
+        len: usize,
+        flags: RegionFlags,
+    ) -> Result<AddressRegion, RegionError> {
+        match self.find_free_space(len) {
+            Some(addr) => self.insert_region(AddressRegion::new(addr, len), flags),
+            None => Err(RegionError::OutOfSpace),
+        }
+    }
+
     /// Extend region. Returns the sub-region that extends the region.
-    pub fn extend_region(&mut self, addr: Address) -> Result<AddressRegion, AddressSpaceError> {
+    pub fn extend_region(&mut self, addr: Address) -> Result<AddressRegion, RegionError> {
         let probe = AddressRegion::new(addr, PAGE_SIZE);
         let addr = addr.as_ptr() as usize;
         let space_addr = self.addr.as_ptr() as usize;
 
         if addr < space_addr || addr >= (space_addr + self.len) {
-            return Err(AddressSpaceError::OutOfRange);
+            return Err(RegionError::Overflow);
         }
 
         let mut region: Option<AddressRegion> = None;
@@ -133,14 +147,14 @@ impl<const N: usize> AddressSpace<N> {
             if addr > (other.addr + other.len) {
                 region = Some(other);
             } else if probe.intersects(other) {
-                return Err(AddressSpaceError::Overlapping);
+                return Err(RegionError::Overlap);
             } else if region != None {
                 break;
             }
         }
 
         if region == None {
-            return Err(AddressSpaceError::NoRegions);
+            return Err(RegionError::NoRegions);
         }
 
         let region = region.unwrap();
@@ -165,8 +179,70 @@ impl<const N: usize> AddressSpace<N> {
         })
     }
 
+    /// Check that the given memory region is disjoint from other regions,
+    /// and insert it to the address space.
+    pub fn insert_region(
+        &mut self,
+        region: AddressRegion,
+        flags: RegionFlags,
+    ) -> Result<AddressRegion, RegionError> {
+        let region_addr = region.addr().as_ptr() as usize;
+        let map_addr = self.addr.as_ptr() as usize;
+
+        if region_addr < map_addr || region_addr >= (map_addr + self.len) {
+            return Err(RegionError::Overflow);
+        }
+
+        let mut result = region;
+        let mut adj_table: [(usize, usize); 2] = [(0, 0); 2];
+        let mut adj_count: usize = 0;
+
+        for (_, other) in self.map.iter() {
+            let other = other.unwrap();
+
+            if other.intersects(result) {
+                return Err(RegionError::Overlap);
+            }
+
+            // Collect adjacent memory regions, which have the same permissions.
+            if other.is_adjacent(result) {
+                assert!(adj_count < 2);
+                adj_table[adj_count] = (other.addr, other.len);
+                adj_count += 1;
+            }
+        }
+
+        if (self.map.len() - adj_count) == N {
+            return Err(RegionError::OutOfCapacity);
+        }
+
+        // Remove adjacent memory regions, and update address and len of the
+        // new region.
+        for (adj_addr, adj_len) in adj_table {
+            if adj_addr == 0 {
+                break;
+            }
+
+            if !flags.contains(RegionFlags::DRY_RUN) {
+                self.map.remove(&adj_addr);
+            }
+
+            result.addr = min(result.addr, adj_addr);
+            result.len += adj_len;
+        }
+
+        if !flags.contains(RegionFlags::DRY_RUN) {
+            match self.map.insert(result.addr, Some(result)) {
+                Ok(None) => (),
+                _ => panic!(),
+            }
+        }
+
+        Ok(result)
+    }
+
     /// Find space for a free region.
-    pub fn find_free_space(&mut self, len: usize) -> Option<Address> {
+    fn find_free_space(&mut self, len: usize) -> Option<Address> {
         let start = self.addr.as_ptr() as usize;
         let mut log: [(usize, usize); 2] = [(start, start), (0, 0)];
         let mut prev = 0;
@@ -188,68 +264,6 @@ impl<const N: usize> AddressSpace<N> {
         }
 
         None
-    }
-
-    /// Check that the given memory region is disjoint from other regions,
-    /// and insert it to the address space.
-    pub fn insert_region(
-        &mut self,
-        region: AddressRegion,
-        flags: InsertFlags,
-    ) -> Result<AddressRegion, AddressSpaceError> {
-        let region_addr = region.addr().as_ptr() as usize;
-        let map_addr = self.addr.as_ptr() as usize;
-
-        if region_addr < map_addr || region_addr >= (map_addr + self.len) {
-            return Err(AddressSpaceError::OutOfRange);
-        }
-
-        let mut result = region;
-        let mut adj_table: [(usize, usize); 2] = [(0, 0); 2];
-        let mut adj_count: usize = 0;
-
-        for (_, other) in self.map.iter() {
-            let other = other.unwrap();
-
-            if other.intersects(result) {
-                return Err(AddressSpaceError::Overlapping);
-            }
-
-            // Collect adjacent memory regions, which have the same permissions.
-            if other.is_adjacent(result) {
-                assert!(adj_count < 2);
-                adj_table[adj_count] = (other.addr, other.len);
-                adj_count += 1;
-            }
-        }
-
-        if (self.map.len() - adj_count) == N {
-            return Err(AddressSpaceError::OutOfCapacity);
-        }
-
-        // Remove adjacent memory regions, and update address and len of the
-        // new region.
-        for (adj_addr, adj_len) in adj_table {
-            if adj_addr == 0 {
-                break;
-            }
-
-            if !flags.contains(InsertFlags::DRY_RUN) {
-                self.map.remove(&adj_addr);
-            }
-
-            result.addr = min(result.addr, adj_addr);
-            result.len += adj_len;
-        }
-
-        if !flags.contains(InsertFlags::DRY_RUN) {
-            match self.map.insert(result.addr, Some(result)) {
-                Ok(None) => (),
-                _ => panic!(),
-            }
-        }
-
-        Ok(result)
     }
 }
 
@@ -293,7 +307,7 @@ mod tests {
 
         println!("{:?}", region_a);
 
-        m.insert_region(region_a, InsertFlags::empty()).unwrap();
+        m.insert_region(region_a, RegionFlags::empty()).unwrap();
         let result = match m.extend_region(B) {
             Ok(region) => region,
             _ => panic!(),
@@ -312,8 +326,8 @@ mod tests {
         let region_a = AddressRegion::new(A, PAGE_SIZE);
         let region_b = AddressRegion::new(B, PAGE_SIZE);
 
-        m.insert_region(region_a, InsertFlags::empty()).unwrap();
-        m.insert_region(region_b, InsertFlags::empty()).unwrap();
+        m.insert_region(region_a, RegionFlags::empty()).unwrap();
+        m.insert_region(region_b, RegionFlags::empty()).unwrap();
 
         let addr = match m.find_free_space(PAGE_SIZE) {
             Some(r) => r,
@@ -332,8 +346,8 @@ mod tests {
         let region_a = AddressRegion::new(A, PAGE_SIZE);
         let region_b = AddressRegion::new(B, PAGE_SIZE);
 
-        m.insert_region(region_a, InsertFlags::empty()).unwrap();
-        m.insert_region(region_b, InsertFlags::empty()).unwrap();
+        m.insert_region(region_a, RegionFlags::empty()).unwrap();
+        m.insert_region(region_b, RegionFlags::empty()).unwrap();
 
         match m.find_free_space(2 * PAGE_SIZE) {
             Some(_) => panic!(),
@@ -348,7 +362,7 @@ mod tests {
         let mut m: AddressSpace<1> = AddressSpace::new(MEMORY_MAP_ADDRESS, MEMORY_MAP_SIZE);
         let region = AddressRegion::new(A, PAGE_SIZE);
 
-        let region = match m.insert_region(region, InsertFlags::empty()) {
+        let region = match m.insert_region(region, RegionFlags::empty()) {
             Ok(region) => region,
             _ => panic!(),
         };
@@ -365,9 +379,9 @@ mod tests {
         let region_a = AddressRegion::new(A, PAGE_SIZE);
         let region_b = AddressRegion::new(B, PAGE_SIZE);
 
-        m.insert_region(region_a, InsertFlags::empty()).unwrap();
+        m.insert_region(region_a, RegionFlags::empty()).unwrap();
 
-        let region = match m.insert_region(region_b, InsertFlags::DRY_RUN) {
+        let region = match m.insert_region(region_b, RegionFlags::DRY_RUN) {
             Ok(region) => region,
             _ => panic!(),
         };
@@ -382,8 +396,8 @@ mod tests {
         let mut m: AddressSpace<2> = AddressSpace::new(MEMORY_MAP_ADDRESS, MEMORY_MAP_SIZE);
         let region_a = AddressRegion::new(A, PAGE_SIZE);
 
-        match m.insert_region(region_a, InsertFlags::DRY_RUN) {
-            Err(AddressSpaceError::OutOfRange) => (),
+        match m.insert_region(region_a, RegionFlags::DRY_RUN) {
+            Err(RegionError::Overflow) => (),
             _ => panic!(),
         }
     }
@@ -397,9 +411,9 @@ mod tests {
         let region_a = AddressRegion::new(A, PAGE_SIZE);
         let region_b = AddressRegion::new(B, PAGE_SIZE);
 
-        m.insert_region(region_a, InsertFlags::empty()).unwrap();
-        match m.insert_region(region_b, InsertFlags::DRY_RUN) {
-            Err(AddressSpaceError::Overlapping) => (),
+        m.insert_region(region_a, RegionFlags::empty()).unwrap();
+        match m.insert_region(region_b, RegionFlags::DRY_RUN) {
+            Err(RegionError::Overlap) => (),
             _ => panic!(),
         }
     }
@@ -413,8 +427,8 @@ mod tests {
         let region_a = AddressRegion::new(A, PAGE_SIZE);
         let region_b = AddressRegion::new(B, PAGE_SIZE);
 
-        m.insert_region(region_a, InsertFlags::empty()).unwrap();
-        let region_c = match m.insert_region(region_b, InsertFlags::DRY_RUN) {
+        m.insert_region(region_a, RegionFlags::empty()).unwrap();
+        let region_c = match m.insert_region(region_b, RegionFlags::DRY_RUN) {
             Ok(region) => region,
             _ => panic!(),
         };
@@ -431,9 +445,9 @@ mod tests {
         let region_a = AddressRegion::new(A, PAGE_SIZE);
         let region_b = AddressRegion::new(B, PAGE_SIZE);
 
-        m.insert_region(region_a, InsertFlags::empty()).unwrap();
-        match m.insert_region(region_b, InsertFlags::DRY_RUN) {
-            Err(AddressSpaceError::OutOfCapacity) => (),
+        m.insert_region(region_a, RegionFlags::empty()).unwrap();
+        match m.insert_region(region_b, RegionFlags::DRY_RUN) {
+            Err(RegionError::OutOfCapacity) => (),
             _ => panic!(),
         }
     }
