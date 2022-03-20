@@ -8,20 +8,23 @@ use heapless::FnvIndexMap;
 
 type Address = NonNull<c_void>;
 
+const PAGE_SIZE: usize = 4096;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(C, align(32))]
 pub struct AddressRegion {
-    addr: Address,
+    addr: usize,
     len: usize,
     padding: usize,
 }
 
-/// A virtual memory region (VMA) descriptor. Equality and ordering are defined by
-/// the start address of a VMA.
+/// Region of an address space
 impl AddressRegion {
     /// Create a new instance.
     #[inline]
     pub fn new(addr: Address, len: usize) -> Self {
+        let addr = addr.as_ptr() as usize;
+        assert_eq!(addr & (PAGE_SIZE - 1), 0);
         Self {
             addr,
             len,
@@ -29,46 +32,40 @@ impl AddressRegion {
         }
     }
 
-    /// Return address of the region.
+    /// Return start address.
     #[inline]
     pub fn addr(&self) -> Address {
-        self.addr
+        Address::new(self.addr as *mut c_void).unwrap()
     }
 
-    /// Return length of the region.
+    /// Return length.
     #[inline]
     pub fn len(&self) -> usize {
         self.len
     }
 
-    /// Is the region's length zero?
+    /// Check if the length is zero.
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.len == 0
     }
 
-    /// Return end address of the region.
+    /// Return end address.
     #[inline]
     pub fn end(&self) -> Address {
-        let end_ptr = (self.addr.as_ptr() as usize + self.len) as *mut c_void;
-
-        if let Some(end_ptr) = NonNull::new(end_ptr) {
-            end_ptr
-        } else {
-            panic!();
-        }
+        Address::new((self.addr + self.len) as *mut c_void).unwrap()
     }
 
-    /// Check if the given region intersects with this.
+    /// Check if other region intersects.
     #[inline]
     pub fn intersects(&self, other: AddressRegion) -> bool {
-        !(self.addr >= other.end() || other.addr >= self.end())
+        !(self.addr >= (other.addr + other.len) || other.addr >= (self.addr + self.len))
     }
 
-    /// Check if the given region is adjacent to this.
+    /// Check if other region is adjacent.
     #[inline]
     pub fn is_adjacent(&self, other: AddressRegion) -> bool {
-        self.end() == other.addr || other.end() == self.addr
+        (self.addr + self.len) == other.addr || (other.addr + other.len) == self.addr
     }
 }
 
@@ -250,7 +247,7 @@ impl<const N: usize> AddressSpace<N> {
             // Collect adjacent memory regions, which have the same permissions.
             if other.is_adjacent(result) {
                 assert!(adj_count < 2);
-                adj_table[adj_count] = (other.addr.as_ptr() as usize, other.len);
+                adj_table[adj_count] = (other.addr, other.len);
                 adj_count += 1;
             }
         }
@@ -270,12 +267,12 @@ impl<const N: usize> AddressSpace<N> {
                 self.map.remove(&adj_addr);
             }
 
-            result.addr = min(result.addr, Address::new(adj_addr as *mut c_void).unwrap());
+            result.addr = min(result.addr, adj_addr);
             result.len += adj_len;
         }
 
         if !flags.contains(InsertFlags::DRY_RUN) {
-            match self.map.insert(result.addr.as_ptr() as usize, Some(result)) {
+            match self.map.insert(result.addr, Some(result)) {
                 Ok(None) => (),
                 _ => panic!(),
             }
@@ -333,10 +330,7 @@ mod tests {
         const A: Address = unsafe { Address::new_unchecked(PAGE_SIZE as *mut c_void) };
         const B: Address = unsafe { Address::new_unchecked(MEMORY_MAP_SIZE as *mut c_void) };
 
-        assert!(
-            AddressRegion::new(A, PAGE_SIZE)
-                != AddressRegion::new(B, PAGE_SIZE)
-        );
+        assert!(AddressRegion::new(A, PAGE_SIZE) != AddressRegion::new(B, PAGE_SIZE));
     }
 
     #[test]
@@ -427,10 +421,7 @@ mod tests {
             _ => panic!(),
         };
 
-        assert_eq!(
-            region,
-            AddressRegion::new(A, 2 * PAGE_SIZE)
-        );
+        assert_eq!(region, AddressRegion::new(A, 2 * PAGE_SIZE));
     }
 
     #[test]
