@@ -77,13 +77,6 @@ pub struct AddressSpace<const N: usize> {
     map: FnvIndexMap<usize, Option<AddressRegion>, N>,
 }
 
-/// Error codes for `AddressSpace::set_region_permissions()`
-#[derive(Debug)]
-pub enum SetRegionPermissionsError {
-    /// Not fully overlapping the existing address regions
-    NotOverlapping,
-}
-
 /// Error codes for `AddressSpace::insert_region()`
 #[derive(Debug)]
 pub enum InsertRegionError {
@@ -265,27 +258,6 @@ impl<const N: usize> AddressSpace<N> {
 
         Ok(result)
     }
-
-    /// Set permissions for an address region.
-    pub fn set_region_permissions(
-        &mut self,
-        region: AddressRegion,
-    ) -> Result<AddressRegion, SetRegionPermissionsError> {
-        // A microarchitecture constraint in SGX.
-        let key = region.addr().as_ptr() as usize;
-
-        if let Some(other) = self.map.get(&key) {
-            let other = other.unwrap();
-
-            if region.len() == other.len() {
-                self.map.remove(&key).unwrap();
-                self.map.insert(key, Some(region)).unwrap();
-                return Ok(region);
-            }
-        }
-
-        Err(SetRegionPermissionsError::NotOverlapping)
-    }
 }
 
 #[cfg(test)]
@@ -466,40 +438,6 @@ mod tests {
         m.insert_region(region_a, InsertFlags::empty()).unwrap();
         match m.insert_region(region_b, InsertFlags::DRY_RUN) {
             Err(InsertRegionError::OutOfCapacity) => (),
-            _ => panic!(),
-        }
-    }
-
-    #[test]
-    fn set_region_permissions() {
-        const A: Address = unsafe { Address::new_unchecked((2 * PAGE_SIZE) as *mut c_void) };
-        const B: Address = unsafe { Address::new_unchecked((2 * PAGE_SIZE) as *mut c_void) };
-
-        let mut m: AddressSpace<1> = AddressSpace::new(MEMORY_MAP_ADDRESS, MEMORY_MAP_SIZE);
-        let region_a = AddressRegion::new(A, PAGE_SIZE);
-        let region_b = AddressRegion::new(B, PAGE_SIZE);
-
-        m.insert_region(region_a, InsertFlags::empty()).unwrap();
-        let region_c = match m.set_region_permissions(region_b) {
-            Ok(region) => region,
-            _ => panic!(),
-        };
-
-        assert_eq!(region_c, region_b);
-    }
-
-    #[test]
-    fn set_region_permissions_no_overlap() {
-        const A: Address = unsafe { Address::new_unchecked((2 * PAGE_SIZE) as *mut c_void) };
-        const B: Address = unsafe { Address::new_unchecked((3 * PAGE_SIZE) as *mut c_void) };
-
-        let mut m: AddressSpace<1> = AddressSpace::new(MEMORY_MAP_ADDRESS, MEMORY_MAP_SIZE);
-        let region_a = AddressRegion::new(A, PAGE_SIZE);
-        let region_b = AddressRegion::new(B, PAGE_SIZE);
-
-        m.insert_region(region_a, InsertFlags::empty()).unwrap();
-        match m.set_region_permissions(region_b) {
-            Err(SetRegionPermissionsError::NotOverlapping) => (),
             _ => panic!(),
         }
     }
