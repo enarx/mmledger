@@ -295,6 +295,52 @@ mod tests {
     }
 
     #[test]
+    fn alloc_region_success() {
+        const A: Address = unsafe { Address::new_unchecked((2 * PAGE_SIZE) as *mut c_void) };
+        const B: Address = unsafe { Address::new_unchecked((4 * PAGE_SIZE) as *mut c_void) };
+
+        let mut m: AddressSpace<2> = AddressSpace::new(MEMORY_MAP_ADDRESS, MEMORY_MAP_SIZE);
+        let region_a = AddressRegion::new(A, PAGE_SIZE);
+        let region_b = AddressRegion::new(B, PAGE_SIZE);
+
+        m.insert_region(region_a, AddressSpaceFlags::empty())
+            .unwrap();
+        m.insert_region(region_b, AddressSpaceFlags::empty())
+            .unwrap();
+
+        let result = match m.allocate_region(PAGE_SIZE, AddressSpaceFlags::DRY_RUN) {
+            Ok(r) => r,
+            _ => panic!(),
+        };
+
+        assert_eq!(result, AddressRegion::new(MEMORY_MAP_ADDRESS, 3 * PAGE_SIZE));
+    }
+
+    #[test]
+    fn alloc_region_failure() {
+        const A: Address = unsafe { Address::new_unchecked((2 * PAGE_SIZE) as *mut c_void) };
+        const B: Address = unsafe { Address::new_unchecked((4 * PAGE_SIZE) as *mut c_void) };
+        const C: Address = unsafe { Address::new_unchecked((3 * PAGE_SIZE) as *mut c_void) };
+
+        let mut m: AddressSpace<2> = AddressSpace::new(MEMORY_MAP_ADDRESS, MEMORY_MAP_SIZE);
+        let region_a = AddressRegion::new(A, PAGE_SIZE);
+        let region_b = AddressRegion::new(B, PAGE_SIZE);
+        let region_c = AddressRegion::new(C, PAGE_SIZE);
+
+        m.insert_region(region_a, AddressSpaceFlags::empty())
+            .unwrap();
+        m.insert_region(region_b, AddressSpaceFlags::empty())
+            .unwrap();
+        m.insert_region(region_c, AddressSpaceFlags::empty())
+            .unwrap();
+
+        match m.allocate_region(PAGE_SIZE, AddressSpaceFlags::DRY_RUN) {
+            Err(AddressSpaceError::OutOfSpace) => (),
+            _ => panic!(),
+        }
+    }
+
+    #[test]
     fn extend_region() {
         const A: Address = unsafe { Address::new_unchecked((2 * PAGE_SIZE) as *mut c_void) };
         const B: Address = unsafe { Address::new_unchecked((4 * PAGE_SIZE) as *mut c_void) };
@@ -314,49 +360,6 @@ mod tests {
         };
 
         assert_eq!(result, expected);
-    }
-
-    #[test]
-    fn find_free_space_success() {
-        const A: Address = unsafe { Address::new_unchecked((2 * PAGE_SIZE) as *mut c_void) };
-        const B: Address = unsafe { Address::new_unchecked((4 * PAGE_SIZE) as *mut c_void) };
-        const C: Address = unsafe { Address::new_unchecked((3 * PAGE_SIZE) as *mut c_void) };
-
-        let mut m: AddressSpace<2> = AddressSpace::new(MEMORY_MAP_ADDRESS, MEMORY_MAP_SIZE);
-        let region_a = AddressRegion::new(A, PAGE_SIZE);
-        let region_b = AddressRegion::new(B, PAGE_SIZE);
-
-        m.insert_region(region_a, AddressSpaceFlags::empty())
-            .unwrap();
-        m.insert_region(region_b, AddressSpaceFlags::empty())
-            .unwrap();
-
-        let addr = match m.find_free_space(PAGE_SIZE) {
-            Some(r) => r,
-            None => panic!(),
-        };
-
-        assert_eq!(addr, C);
-    }
-
-    #[test]
-    fn find_free_space_failure() {
-        const A: Address = unsafe { Address::new_unchecked((2 * PAGE_SIZE) as *mut c_void) };
-        const B: Address = unsafe { Address::new_unchecked((4 * PAGE_SIZE) as *mut c_void) };
-
-        let mut m: AddressSpace<2> = AddressSpace::new(MEMORY_MAP_ADDRESS, MEMORY_MAP_SIZE);
-        let region_a = AddressRegion::new(A, PAGE_SIZE);
-        let region_b = AddressRegion::new(B, PAGE_SIZE);
-
-        m.insert_region(region_a, AddressSpaceFlags::empty())
-            .unwrap();
-        m.insert_region(region_b, AddressSpaceFlags::empty())
-            .unwrap();
-
-        match m.find_free_space(2 * PAGE_SIZE) {
-            Some(_) => panic!(),
-            None => (),
-        }
     }
 
     #[test]
