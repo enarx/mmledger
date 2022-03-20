@@ -1,7 +1,7 @@
 //! An address space keeps track of a set of reserved regions of addresses
 //! within a fixed address region.
 
-use core::cmp::{min, Ordering};
+use core::cmp::min;
 use core::ffi::c_void;
 use core::ptr::NonNull;
 use heapless::FnvIndexMap;
@@ -21,7 +21,7 @@ bitflags::bitflags! {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(C, align(32))]
 pub struct AddressRegion {
     addr: Address,
@@ -90,24 +90,6 @@ impl AddressRegion {
     #[inline]
     pub fn is_adjacent(&self, other: AddressRegion) -> bool {
         self.end() == other.addr || other.end() == self.addr
-    }
-}
-
-impl PartialEq for AddressRegion {
-    fn eq(&self, other: &Self) -> bool {
-        self.addr == other.addr
-    }
-}
-
-impl Ord for AddressRegion {
-    fn cmp(&self, other: &Self) -> Ordering {
-        self.addr.cmp(&other.addr)
-    }
-}
-
-impl PartialOrd for AddressRegion {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
     }
 }
 
@@ -316,17 +298,6 @@ mod tests {
     }
 
     #[test]
-    fn addr_region_less_than() {
-        const A: Address = unsafe { Address::new_unchecked(PAGE_SIZE as *mut c_void) };
-        const B: Address = unsafe { Address::new_unchecked(MEMORY_MAP_SIZE as *mut c_void) };
-
-        assert!(
-            AddressRegion::new(A, PAGE_SIZE, Permissions::READ)
-                < AddressRegion::new(B, PAGE_SIZE, Permissions::READ)
-        );
-    }
-
-    #[test]
     fn addr_region_not_equal() {
         const A: Address = unsafe { Address::new_unchecked(PAGE_SIZE as *mut c_void) };
         const B: Address = unsafe { Address::new_unchecked(MEMORY_MAP_SIZE as *mut c_void) };
@@ -334,17 +305,6 @@ mod tests {
         assert!(
             AddressRegion::new(A, PAGE_SIZE, Permissions::READ)
                 != AddressRegion::new(B, PAGE_SIZE, Permissions::READ)
-        );
-    }
-
-    #[test]
-    fn addr_region_not_less_than() {
-        const A: Address = unsafe { Address::new_unchecked(MEMORY_MAP_SIZE as *mut c_void) };
-        const B: Address = unsafe { Address::new_unchecked(PAGE_SIZE as *mut c_void) };
-
-        assert!(
-            !(AddressRegion::new(A, PAGE_SIZE, Permissions::READ)
-                < AddressRegion::new(B, PAGE_SIZE, Permissions::READ))
         );
     }
 
