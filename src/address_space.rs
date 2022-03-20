@@ -102,7 +102,7 @@ pub struct AddressSpace<const N: usize> {
 
 /// Error codes for `AddressSpace::set_region_permissions()`
 #[derive(Debug)]
-pub enum SetPermissionsError {
+pub enum SetRegionPermissionsError {
     /// Invalid permissions
     InvalidPermissions,
     /// Not fully overlapping the existing address regions
@@ -111,7 +111,7 @@ pub enum SetPermissionsError {
 
 /// Error codes for `AddressSpace::insert_region()`
 #[derive(Debug)]
-pub enum InsertError {
+pub enum InsertRegionError {
     /// Invalid permissions
     InvalidPermissions,
     /// Out of storage capacity
@@ -120,6 +120,21 @@ pub enum InsertError {
     OutOfRange,
     /// Overlapping with the existing address spaces
     Overlapping,
+    /// Not aligned to page boundaries
+    Unaligned,
+}
+
+/// Error codes for `AddressSpace::insert_region()`
+#[derive(Debug)]
+pub enum ExtendRegionError {
+    /// Not inside the address space
+    OutOfRange,
+    /// Overlapping with the existing address spaces
+    Overlapping,
+    /// Not aligned to page boundaries
+    Unaligned,
+    /// No regions to extend
+    NoRegions,
 }
 
 bitflags::bitflags! {
@@ -158,12 +173,55 @@ impl<const N: usize> AddressSpace<N> {
         self.len == 0
     }
 
+    /// Extend region.
+    pub fn extend_region(&mut self, addr: Address) -> Result<AddressRegion, ExtendRegionError> {
+        let raw_addr = addr.as_ptr() as usize;
+        let space_addr = self.addr.as_ptr() as usize;
+
+        if raw_addr < space_addr || raw_addr >= (space_addr + self.len) {
+            return Err(ExtendRegionError::OutOfRange);
+        }
+
+        if (raw_addr & 4095) != 0 {
+            return Err(ExtendRegionError::Unaligned);
+        }
+
+        for (_, region) in self.map.iter() {
+            let region = region.unwrap();
+            let region_addr = region.addr().as_ptr() as usize;
+
+            if raw_addr > region_addr + region.len() {
+                let addr_region = AddressRegion::new(addr, 4096, region.permissions());
+
+                for (_, other) in self.map.iter() {
+                    let other = other.unwrap();
+                    if addr_region.intersects(other) {
+                        return Err(ExtendRegionError::Overlapping);
+                    }
+                }
+
+                self.map.remove(&region_addr).unwrap();
+                return Ok(AddressRegion::new(
+                    region.addr(),
+                    raw_addr - region_addr + 4096,
+                    region.permissions(),
+                ));
+            }
+        }
+
+        Err(ExtendRegionError::OutOfRange)
+    }
+
     /// Loop through the address space in the minimum address order, and try to
     /// find spece for a region with the required metrics.
-    pub fn find_free_space(&mut self, size: usize) -> Option<Address> {
+    pub fn find_free_space(&mut self, len: usize) -> Option<Address> {
         let start = self.addr.as_ptr() as usize;
         let mut log: [(usize, usize); 2] = [(start, start), (0, 0)];
         let mut prev = 0;
+
+        if (len & 4095) != 0 {
+            return None;
+        }
 
         for (_, region) in self.map.iter() {
             let region = region.unwrap();
@@ -175,41 +233,14 @@ impl<const N: usize> AddressSpace<N> {
             );
 
             let distance = log[next].0 - log[prev].1;
-            if distance >= size {
-                return Some(Address::new((log[next].0 - size) as *mut c_void).unwrap());
+            if distance >= len {
+                return Some(Address::new((log[next].0 - len) as *mut c_void).unwrap());
             }
 
             prev = next;
         }
 
         None
-    }
-
-    /// Set permissions for an address region. Supports *currently* only
-    /// changing permissions to regions that match exactly: neither partial
-    /// overlaps nor overlaps that span multiple regions are supported.
-    pub fn set_region_permissions(
-        &mut self,
-        region: AddressRegion,
-    ) -> Result<AddressRegion, SetPermissionsError> {
-        // A microarchitecture constraint in SGX.
-        if (region.permissions() & Permissions::READ) != Permissions::READ {
-            return Err(SetPermissionsError::InvalidPermissions);
-        }
-
-        let key = region.addr().as_ptr() as usize;
-
-        if let Some(other) = self.map.get(&key) {
-            let other = other.unwrap();
-
-            if region.len() == other.len() {
-                self.map.remove(&key).unwrap();
-                self.map.insert(key, Some(region)).unwrap();
-                return Ok(region);
-            }
-        }
-
-        Err(SetPermissionsError::NotOverlapping)
     }
 
     /// Check that the given memory region is disjoint and there is enough space
@@ -219,17 +250,21 @@ impl<const N: usize> AddressSpace<N> {
         &mut self,
         region: AddressRegion,
         flags: InsertFlags,
-    ) -> Result<AddressRegion, InsertError> {
+    ) -> Result<AddressRegion, InsertRegionError> {
         // A microarchitecture constraint in SGX.
         if (region.permissions() & Permissions::READ) != Permissions::READ {
-            return Err(InsertError::InvalidPermissions);
+            return Err(InsertRegionError::InvalidPermissions);
         }
 
         let region_addr = region.addr().as_ptr() as usize;
         let map_addr = self.addr.as_ptr() as usize;
 
         if region_addr < map_addr || region_addr >= (map_addr + self.len) {
-            return Err(InsertError::OutOfRange);
+            return Err(InsertRegionError::OutOfRange);
+        }
+
+        if (region_addr & 4095) != 0 || (region.len() & 4095) != 0 {
+            return Err(InsertRegionError::Unaligned);
         }
 
         let mut result = region;
@@ -240,7 +275,7 @@ impl<const N: usize> AddressSpace<N> {
             let other = other.unwrap();
 
             if other.intersects(result) {
-                return Err(InsertError::Overlapping);
+                return Err(InsertRegionError::Overlapping);
             }
 
             // Collect adjacent memory regions, which have the same permissions.
@@ -252,7 +287,7 @@ impl<const N: usize> AddressSpace<N> {
         }
 
         if (self.map.len() - adj_count) == N {
-            return Err(InsertError::OutOfCapacity);
+            return Err(InsertRegionError::OutOfCapacity);
         }
 
         // Remove adjacent memory regions, and update address and len of the
@@ -278,6 +313,33 @@ impl<const N: usize> AddressSpace<N> {
         }
 
         Ok(result)
+    }
+
+    /// Set permissions for an address region. Supports *currently* only
+    /// changing permissions to regions that match exactly: neither partial
+    /// overlaps nor overlaps that span multiple regions are supported.
+    pub fn set_region_permissions(
+        &mut self,
+        region: AddressRegion,
+    ) -> Result<AddressRegion, SetRegionPermissionsError> {
+        // A microarchitecture constraint in SGX.
+        if (region.permissions() & Permissions::READ) != Permissions::READ {
+            return Err(SetRegionPermissionsError::InvalidPermissions);
+        }
+
+        let key = region.addr().as_ptr() as usize;
+
+        if let Some(other) = self.map.get(&key) {
+            let other = other.unwrap();
+
+            if region.len() == other.len() {
+                self.map.remove(&key).unwrap();
+                self.map.insert(key, Some(region)).unwrap();
+                return Ok(region);
+            }
+        }
+
+        Err(SetRegionPermissionsError::NotOverlapping)
     }
 }
 
@@ -310,6 +372,24 @@ mod tests {
             AddressRegion::new(A, PAGE_SIZE, Permissions::READ)
                 != AddressRegion::new(B, PAGE_SIZE, Permissions::READ)
         );
+    }
+
+    #[test]
+    fn extend_region() {
+        const A: Address = unsafe { Address::new_unchecked((2 * PAGE_SIZE) as *mut c_void) };
+        const B: Address = unsafe { Address::new_unchecked((4 * PAGE_SIZE) as *mut c_void) };
+
+        let mut m: AddressSpace<1> = AddressSpace::new(MEMORY_MAP_ADDRESS, MEMORY_MAP_SIZE);
+        let region_a = AddressRegion::new(A, PAGE_SIZE, Permissions::READ);
+        let region_b = AddressRegion::new(A, 3 * PAGE_SIZE, Permissions::READ);
+
+        m.insert_region(region_a, InsertFlags::empty()).unwrap();
+        let region_c = match m.extend_region(B) {
+            Ok(region) => region,
+            _ => panic!(),
+        };
+
+        assert_eq!(region_c, region_b);
     }
 
     #[test]
@@ -396,7 +476,7 @@ mod tests {
         let region_a = AddressRegion::new(A, PAGE_SIZE, Permissions::READ);
 
         match m.insert_region(region_a, InsertFlags::DRY_RUN) {
-            Err(InsertError::OutOfRange) => (),
+            Err(InsertRegionError::OutOfRange) => (),
             _ => panic!(),
         }
     }
@@ -412,7 +492,7 @@ mod tests {
 
         m.insert_region(region_a, InsertFlags::empty()).unwrap();
         match m.insert_region(region_b, InsertFlags::DRY_RUN) {
-            Err(InsertError::Overlapping) => (),
+            Err(InsertRegionError::Overlapping) => (),
             _ => panic!(),
         }
     }
@@ -443,7 +523,7 @@ mod tests {
         let region = AddressRegion::new(A, PAGE_SIZE, Permissions::empty());
 
         match m.insert_region(region, InsertFlags::DRY_RUN) {
-            Err(InsertError::InvalidPermissions) => (),
+            Err(InsertRegionError::InvalidPermissions) => (),
             _ => panic!(),
         }
     }
@@ -459,7 +539,7 @@ mod tests {
 
         m.insert_region(region_a, InsertFlags::empty()).unwrap();
         match m.insert_region(region_b, InsertFlags::DRY_RUN) {
-            Err(InsertError::OutOfCapacity) => (),
+            Err(InsertRegionError::OutOfCapacity) => (),
             _ => panic!(),
         }
     }
@@ -493,7 +573,7 @@ mod tests {
 
         m.insert_region(region_a, InsertFlags::empty()).unwrap();
         match m.set_region_permissions(region_b) {
-            Err(SetPermissionsError::NotOverlapping) => (),
+            Err(SetRegionPermissionsError::NotOverlapping) => (),
             _ => panic!(),
         }
     }
