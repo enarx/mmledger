@@ -124,7 +124,7 @@ impl<const N: usize> AddressSpace<N> {
         Self { addr, len, map }
     }
 
-    /// Return address.
+    /// Return start address.
     #[inline]
     pub fn addr(&self) -> Address {
         self.addr
@@ -136,7 +136,7 @@ impl<const N: usize> AddressSpace<N> {
         self.len
     }
 
-    /// Is the address space length zero?
+    /// Check if the length is zero.
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.len == 0
@@ -176,8 +176,7 @@ impl<const N: usize> AddressSpace<N> {
         Err(ExtendRegionError::OutOfRange)
     }
 
-    /// Loop through the address space in the minimum address order, and try to
-    /// find spece for a region with the required metrics.
+    /// Find space for a free region.
     pub fn find_free_space(&mut self, len: usize) -> Option<Address> {
         let start = self.addr.as_ptr() as usize;
         let mut log: [(usize, usize); 2] = [(start, start), (0, 0)];
@@ -205,9 +204,8 @@ impl<const N: usize> AddressSpace<N> {
         None
     }
 
-    /// Check that the given memory region is disjoint and there is enough space
-    /// in the ledger, and the permissions are legit. Add memory region to the
-    /// database. Overlapping address regions are not *currently* supported.
+    /// Check that the given memory region is disjoint from other regions,
+    /// and insert it to the address space.
     pub fn insert_region(
         &mut self,
         region: AddressRegion,
@@ -268,9 +266,7 @@ impl<const N: usize> AddressSpace<N> {
         Ok(result)
     }
 
-    /// Set permissions for an address region. Supports *currently* only
-    /// changing permissions to regions that match exactly: neither partial
-    /// overlaps nor overlaps that span multiple regions are supported.
+    /// Set permissions for an address region.
     pub fn set_region_permissions(
         &mut self,
         region: AddressRegion,
