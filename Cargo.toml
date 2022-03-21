@@ -13,4 +13,5 @@ include = [
 
 [dependencies]
 bitflags = "1.0.4"
-heapless = "0.7.10"
+lset = { git = "https://github.com/enarx/lset", branch = "main" }
+primordial = { git = "https://github.com/enarx/primordial", branch = "main" }
