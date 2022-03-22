@@ -79,6 +79,7 @@ pub enum Error {
 // structure it this way so that the user of the `Ledger` type has
 // fine-grained controls over allocation. For example, to allocate a 4k page,
 // the user can instantiate as `Ledger::<128>::new(..)`.
+#[derive(Clone, Debug)]
 pub struct Ledger<const N: usize> {
     records: [Record; N],
 }
@@ -139,22 +140,33 @@ impl<const N: usize> Ledger<N> {
             return Err(Error::Overflow);
         }
 
+        // Loop over the records looking for merges.
         let mut iter = self.records_mut().iter_mut().peekable();
-        while let Some(this) = iter.next() {
-            // Check to see if there is any overlap.
-            if this.region.intersection(record.region).is_some() {
+        while let Some(prev) = iter.next() {
+            if prev.region.intersection(record.region).is_some() {
                 return Err(Error::Overlap);
             }
 
-            // Check to see if we can merge with an existing slot.
             if let Some(next) = iter.peek() {
-                if this.access == record.access
-                    && this.region.end == record.region.start
-                    && record.region.end <= next.region.start
-                {
+                if next.region.intersection(record.region).is_some() {
+                    return Err(Error::Overlap);
+                }
+            }
+
+            // Potentially merge with the `prev` slot.
+            if prev.access == record.access && prev.region.end == record.region.start {
+                if commit {
+                    prev.region.end = record.region.end;
+                }
+
+                return Ok(());
+            }
+
+            // Potentially merge with the `prev` slot
+            if let Some(next) = iter.peek_mut() {
+                if next.access == record.access && next.region.start == record.region.end {
                     if commit {
-                        // No sort needed.
-                        this.region.end = record.region.end;
+                        next.region.start = record.region.start;
                     }
 
                     return Ok(());
@@ -229,6 +241,37 @@ mod tests {
 
     use core::mem::{align_of, size_of};
 
+    const PREV: Record = Record {
+        region: Line {
+            start: Address::new(0x4000usize),
+            end: Address::new(0x5000usize),
+        },
+        access: Access::empty(),
+        length: 0,
+    };
+
+    const NEXT: Record = Record {
+        region: Line {
+            start: Address::new(0x8000),
+            end: Address::new(0x9000),
+        },
+        access: Access::empty(),
+        length: 0,
+    };
+
+    const INDX: Record = Record {
+        region: Line {
+            start: Address::new(0x1000),
+            end: Address::new(0x10000),
+        },
+        access: Access::empty(),
+        length: 2,
+    };
+
+    const LEDGER: Ledger<3> = Ledger {
+        records: [INDX, PREV, NEXT],
+    };
+
     #[test]
     fn record_size_align() {
         assert_eq!(size_of::<Record>(), size_of::<usize>() * 4);
@@ -295,6 +338,54 @@ mod tests {
             end: Address::from(0xe000).lower(),
         };
         assert_eq!(region, answer);
+    }
+
+    #[test]
+    fn merge_after() {
+        const REGION: Line<Address<usize, Page>> = Line {
+            start: Address::new(0x5000),
+            end: Address::new(0x6000),
+        };
+
+        const MERGED: Record = Record {
+            region: Line {
+                start: Address::new(0x4000),
+                end: Address::new(0x6000),
+            },
+            access: Access::empty(),
+            length: 0,
+        };
+
+        let mut ledger = LEDGER.clone();
+        ledger.insert(REGION, Access::empty(), true).unwrap();
+
+        assert_eq!(ledger.records[0].length, 2);
+        assert_eq!(ledger.records[1], MERGED);
+        assert_eq!(ledger.records[2], NEXT);
+    }
+
+    #[test]
+    fn merge_before() {
+        const REGION: Line<Address<usize, Page>> = Line {
+            start: Address::new(0x7000),
+            end: Address::new(0x8000),
+        };
+
+        const MERGED: Record = Record {
+            region: Line {
+                start: Address::new(0x7000),
+                end: Address::new(0x9000),
+            },
+            access: Access::empty(),
+            length: 0,
+        };
+
+        let mut ledger = LEDGER.clone();
+        ledger.insert(REGION, Access::empty(), true).unwrap();
+
+        assert_eq!(ledger.records[0].length, 2);
+        assert_eq!(ledger.records[1], PREV);
+        assert_eq!(ledger.records[2], MERGED);
     }
 
     /*

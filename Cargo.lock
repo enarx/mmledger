@@ -25,4 +25,4 @@ dependencies = [
 [[package]]
 name = "primordial"
 version = "0.4.0"
-source = "git+https://github.com/enarx/primordial?branch=main#c6b1003bbc895e962afae932b80eb32be8da6612"
+source = "git+https://github.com/enarx/primordial?branch=main#b606b9e472e2238384b003f12fdada077e04d2fe"
