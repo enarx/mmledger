@@ -46,7 +46,7 @@ pub enum Error {
     OutOfCapacity,
 
     /// No space for the region
-    OutOfSpace,
+    NoSpace,
 
     /// Overlapping with the existing regions
     Overlap,
@@ -155,40 +155,62 @@ impl<const N: usize> Ledger<N> {
         Err(Error::OutOfCapacity)
     }
 
-    /// Find space for a region.
-    pub fn find_free(
+    /// Find free space from front.
+    pub fn find_free_front(
         &self,
         len: Offset<usize, Page>,
-        front: bool,
     ) -> Result<Line<Address<usize, Page>>, Error> {
-        let start = Region::new(Line::new(self.addresses.start, self.addresses.start), 0);
-        let end = Region::new(Line::new(self.addresses.end, self.addresses.end), 0);
-        let first = [start, *self.regions().first().unwrap_or(&end)];
-        let last = [*self.regions().last().unwrap_or(&start), end];
-
-        // Chain everything together.
-        let mut iter = first
-            .windows(2)
-            .chain(self.regions().windows(2))
-            .chain(last.windows(2));
-
-        // Iterate through the windows.
-        if front {
-            while let Some([l, r]) = iter.next() {
-                if r.addresses.end - l.addresses.start > len {
-                    return Ok(Span::new(l.addresses.end, len).into());
-                }
-            }
-        } else {
-            let mut iter = iter.rev();
-            while let Some([l, r]) = iter.next() {
-                if r.addresses.end - l.addresses.start > len {
-                    return Ok(Span::new(r.addresses.start - len, len).into());
-                }
-            }
+        if len.bytes() == 0 || len > self.addresses.end - self.addresses.start {
+            return Err(Error::InvalidRegion);
         }
 
-        Err(Error::OutOfSpace)
+        if self.len == 0 {
+            return Ok(Span::new(self.addresses.start, len).into());
+        }
+
+        let mut prev: Address<usize, Page> = self.addresses.start;
+        for i in 0..self.len {
+            let next = self.regions[i].addresses.start;
+            if len <= next - prev {
+                return Ok(Span::new(prev, len).into());
+            }
+            prev = self.regions[i].addresses.end;
+        }
+
+        if len <= self.addresses.end - prev {
+            return Ok(Span::new(prev, len).into());
+        }
+
+        Err(Error::NoSpace)
+    }
+
+    /// Find free space from back.
+    pub fn find_free_back(
+        &self,
+        len: Offset<usize, Page>,
+    ) -> Result<Line<Address<usize, Page>>, Error> {
+        if len.bytes() == 0 || len > self.addresses.end - self.addresses.start {
+            return Err(Error::InvalidRegion);
+        }
+
+        if self.len == 0 {
+            return Ok(Span::new(self.addresses.end - len, len).into());
+        }
+
+        let mut next: Address<usize, Page> = self.addresses.end;
+        for i in (0..self.len).rev() {
+            let prev = self.regions[i].addresses.end;
+            if len <= next - prev {
+                return Ok(Span::new(next - len, len).into());
+            }
+            next = self.regions[i].addresses.start;
+        }
+
+        if len <= next - self.addresses.start {
+            return Ok(Span::new(next - len, len).into());
+        }
+
+        Err(Error::NoSpace)
     }
 }
 
@@ -217,9 +239,9 @@ mod tests {
         const B: Line<Address<usize, Page>> = Line::new(Address::new(0x3000), Address::new(0x5000));
 
         let mut ledger: Ledger<8> = Ledger::new(LIMITS);
-        assert_eq!(ledger.find_free(D, true).unwrap(), A);
+        assert_eq!(ledger.find_free_front(D).unwrap(), A);
         ledger.insert(Region::new(A, 0)).unwrap();
-        assert_eq!(ledger.find_free(D, true).unwrap(), B);
+        assert_eq!(ledger.find_free_front(D).unwrap(), B);
     }
 
     #[test]
@@ -230,9 +252,9 @@ mod tests {
         const B: Line<Address<usize, Page>> = Line::new(Address::new(0xc000), Address::new(0xe000));
 
         let mut ledger: Ledger<8> = Ledger::new(LIMITS);
-        assert_eq!(ledger.find_free(D, false).unwrap(), A);
+        assert_eq!(ledger.find_free_back(D).unwrap(), A);
         ledger.insert(Region::new(A, 0)).unwrap();
-        assert_eq!(ledger.find_free(D, false).unwrap(), B);
+        assert_eq!(ledger.find_free_back(D).unwrap(), B);
     }
 
     #[test]
