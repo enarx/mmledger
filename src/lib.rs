@@ -1,6 +1,6 @@
 //! A ledger for memory mappings.
 
-#![no_std]
+#![cfg_attr(not(test), no_std)]
 #![deny(clippy::all)]
 #![deny(missing_docs)]
 #![forbid(unsafe_code)]
