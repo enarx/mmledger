@@ -7,7 +7,7 @@
 
 use core::cmp::Ordering;
 
-use lset::{Empty, Line, Span};
+use lset::{Contains, Empty, Line, Span};
 use primordial::{Address, Offset, Page};
 
 /// A ledger region.
@@ -35,7 +35,7 @@ impl<V: Sized> Region<V> {
 #[derive(Debug)]
 pub enum Error {
     /// Out of storage capacity
-    OutOfCapacity,
+    NoCapacity,
 
     /// No space for the region
     NoSpace,
@@ -56,21 +56,6 @@ pub struct Ledger<V, const N: usize> {
 }
 
 impl<V: Eq + Copy, const N: usize> Ledger<V, N> {
-    /// Sort the regions.
-    fn sort(&mut self) {
-        self.regions_mut().sort_unstable_by(|l, r| {
-            if l.limits == r.limits {
-                Ordering::Equal
-            } else if l.limits.is_empty() {
-                Ordering::Greater
-            } else if r.limits.is_empty() {
-                Ordering::Less
-            } else {
-                l.limits.start.cmp(&r.limits.start)
-            }
-        })
-    }
-
     /// Create a new instance.
     pub fn new(limits: Line<Address<usize, Page>>) -> Self {
         Self {
@@ -85,9 +70,48 @@ impl<V: Eq + Copy, const N: usize> Ledger<V, N> {
         &self.regions[..self.len]
     }
 
-    /// Get a mutable view of the regions.
-    fn regions_mut(&mut self) -> &mut [Region<V>] {
-        &mut self.regions[..self.len]
+    /// Subtract a piece from the regions of the ledge.
+    pub fn subtract(&mut self, piece: Line<Address<usize, Page>>) -> Result<(), Error> {
+        if piece.start >= piece.end {
+            return Err(Error::InvalidRegion);
+        }
+
+        if piece.start < self.limits.start || piece.end > self.limits.end {
+            return Err(Error::InvalidRegion);
+        }
+
+        for i in 0..self.len {
+            // No contact: skip.
+            let cut = piece.intersection(self.regions[i].limits);
+            if cut.is_none() {
+                continue;
+            }
+
+            let limits = self.regions[i].limits;
+            let value = self.regions[i].value;
+
+            // Region fully covered: remove.
+            if piece.contains(&limits) {
+                self.remove(i);
+                continue;
+            }
+
+            // Piece fully covered: split the region and return.
+            if limits.contains(&piece) {
+                self.regions[i].limits = Line::new(limits.start, piece.start);
+                return self.post_insert(Region::new(Line::new(piece.end, limits.end), value));
+            }
+
+            // Partially covered: adjust.
+            let cut = cut.unwrap();
+            if cut.start > limits.start {
+                self.regions[i].limits = Line::new(limits.start, cut.start);
+            } else {
+                self.regions[i].limits = Line::new(cut.end, limits.end);
+            }
+        }
+
+        Err(Error::InvalidRegion)
     }
 
     /// Insert a new region into the ledger.
@@ -129,14 +153,7 @@ impl<V: Eq + Copy, const N: usize> Ledger<V, N> {
             }
         }
 
-        if self.len < self.regions.len() {
-            self.regions[self.len] = region;
-            self.len += 1;
-            self.sort();
-            return Ok(());
-        }
-
-        Err(Error::OutOfCapacity)
+        self.post_insert(region)
     }
 
     /// Find space for a region.
@@ -231,6 +248,51 @@ impl<V: Eq + Copy, const N: usize> Ledger<V, N> {
         }
 
         Err(Error::NoSpace)
+    }
+
+    /// Get a mutable view of the regions.
+    fn regions_mut(&mut self) -> &mut [Region<V>] {
+        &mut self.regions[..self.len]
+    }
+
+    /// Insert a region.
+    fn post_insert(&mut self, region: Region<V>) -> Result<(), Error> {
+        if self.len == self.regions.len() {
+            assert!(self.len <= self.regions.len());
+            return Err(Error::NoCapacity);
+        }
+
+        self.regions[self.len] = region;
+        self.len += 1;
+        self.sort();
+
+        Ok(())
+    }
+
+    /// Remove a region by index.
+    fn remove(&mut self, index: usize) {
+        assert!(self.len > 0);
+        assert!(index < self.len);
+
+        self.regions[index] = self.regions[self.len - 1];
+        self.regions[self.len - 1] = Region::<V>::empty(); // clear
+        self.len -= 1;
+        self.sort();
+    }
+
+    /// Sort the regions.
+    fn sort(&mut self) {
+        self.regions_mut().sort_unstable_by(|l, r| {
+            if l.limits == r.limits {
+                Ordering::Equal
+            } else if l.limits.is_empty() {
+                Ordering::Greater
+            } else if r.limits.is_empty() {
+                Ordering::Less
+            } else {
+                l.limits.start.cmp(&r.limits.start)
+            }
+        })
     }
 }
 
