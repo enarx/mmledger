@@ -6,6 +6,7 @@ homepage = "https://github.com/jarkkojs/mmledger"
 repository = "https://github.com/jarkkojs/mmledger"
 description = "A ledger for confidential computing (CC) shims for tracking memory management system calls"
 edition = "2021"
+rust-version = "1.57"
 include = [
     "**/*.rs",
     "Cargo.toml",
