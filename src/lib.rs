@@ -125,7 +125,6 @@ impl<const N: usize> Ledger<N> {
         &mut self,
         region: impl Into<Region>,
         access: impl Into<Option<Access>>,
-        commit: bool,
     ) -> Result<(), Error> {
         // Make sure the record is valid.
         let record = Record::new(region.into(), access.into().unwrap_or_default());
@@ -153,9 +152,7 @@ impl<const N: usize> Ledger<N> {
 
             // Potentially merge with the `prev` slot.
             if prev.access == record.access && prev.region.end == record.region.start {
-                if commit {
-                    prev.region.end = record.region.end;
-                }
+                prev.region.end = record.region.end;
 
                 return Ok(());
             }
@@ -163,9 +160,7 @@ impl<const N: usize> Ledger<N> {
             // Potentially merge with the `prev` slot
             if let Some(next) = iter.peek_mut() {
                 if next.access == record.access && next.region.start == record.region.end {
-                    if commit {
-                        next.region.start = record.region.start;
-                    }
+                    next.region.start = record.region.start;
 
                     return Ok(());
                 }
@@ -269,7 +264,7 @@ mod tests {
         };
 
         assert_eq!(ledger.records(), &[]);
-        ledger.insert(region, None, true).unwrap();
+        ledger.insert(region, None).unwrap();
         assert_eq!(ledger.records(), &[Record::new(region, Access::empty())]);
     }
 
@@ -300,7 +295,7 @@ mod tests {
         };
 
         let mut ledger = LEDGER.clone();
-        ledger.insert(REGION, Access::empty(), true).unwrap();
+        ledger.insert(REGION, Access::empty()).unwrap();
 
         assert_eq!(ledger.length, 2);
         assert_eq!(ledger.records[0], MERGED);
@@ -316,7 +311,7 @@ mod tests {
         };
 
         let mut ledger = LEDGER.clone();
-        ledger.insert(REGION, Access::empty(), true).unwrap();
+        ledger.insert(REGION, Access::empty()).unwrap();
 
         assert_eq!(ledger.length, 2);
         assert_eq!(ledger.records[0], PREV);
