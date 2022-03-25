@@ -7,8 +7,11 @@
 
 use core::cmp::Ordering;
 
-use lset::{Empty, Line, Span};
+use lset::{Empty, Span};
 use primordial::{Address, Offset, Page};
+
+/// A region of memory.
+pub type Region = lset::Line<Address<usize, Page>>;
 
 bitflags::bitflags! {
     /// Memory access permissions.
@@ -36,7 +39,7 @@ bitflags::bitflags! {
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 pub struct Record {
     /// The covered region of memory.
-    pub region: Line<Address<usize, Page>>,
+    pub region: Region,
 
     /// The access permissions.
     pub access: Access,
@@ -46,12 +49,12 @@ pub struct Record {
 
 impl Record {
     const EMPTY: Record = Record {
-        region: Line::new(Address::NULL, Address::NULL),
+        region: Region::new(Address::NULL, Address::NULL),
         access: Access::empty(),
         length: 0,
     };
 
-    fn new(region: Line<Address<usize, Page>>, access: Access) -> Self {
+    fn new(region: Region, access: Access) -> Self {
         Record {
             region,
             access,
@@ -107,7 +110,7 @@ impl<const N: usize> Ledger<N> {
     }
 
     /// Create a new instance.
-    pub const fn new(region: Line<Address<usize, Page>>) -> Self {
+    pub const fn new(region: Region) -> Self {
         let mut records = [Record::EMPTY; N];
         records[0].region = region;
         Self { records }
@@ -130,7 +133,7 @@ impl<const N: usize> Ledger<N> {
     /// Insert a new record into the ledger.
     pub fn insert(
         &mut self,
-        region: impl Into<Line<Address<usize, Page>>>,
+        region: impl Into<Region>,
         access: impl Into<Option<Access>>,
         commit: bool,
     ) -> Result<(), Error> {
@@ -192,20 +195,16 @@ impl<const N: usize> Ledger<N> {
     }
 
     /// Find space for a free region.
-    pub fn find_free(
-        &self,
-        len: Offset<usize, Page>,
-        front: bool,
-    ) -> Result<Line<Address<usize, Page>>, Error> {
+    pub fn find_free(&self, len: Offset<usize, Page>, front: bool) -> Result<Region, Error> {
         let region = self.records[0].region;
 
         let start = Record {
-            region: Line::new(region.start, region.start),
+            region: Region::new(region.start, region.start),
             ..Default::default()
         };
 
         let end = Record {
-            region: Line::new(region.end, region.end),
+            region: Region::new(region.end, region.end),
             ..Default::default()
         };
 
@@ -248,7 +247,7 @@ mod tests {
     use core::mem::{align_of, size_of};
 
     const PREV: Record = Record {
-        region: Line {
+        region: Region {
             start: Address::new(0x4000usize),
             end: Address::new(0x5000usize),
         },
@@ -257,7 +256,7 @@ mod tests {
     };
 
     const NEXT: Record = Record {
-        region: Line {
+        region: Region {
             start: Address::new(0x8000),
             end: Address::new(0x9000),
         },
@@ -266,7 +265,7 @@ mod tests {
     };
 
     const INDX: Record = Record {
-        region: Line {
+        region: Region {
             start: Address::new(0x1000),
             end: Address::new(0x10000),
         },
@@ -288,9 +287,9 @@ mod tests {
     fn insert() {
         let start = Address::from(0x1000usize).lower();
         let end = Address::from(0x10000usize).lower();
-        let mut ledger = Ledger::<8>::new(Line::new(start, end));
+        let mut ledger = Ledger::<8>::new(Region::new(start, end));
 
-        let region = Line {
+        let region = Region {
             start: Address::from(0xe000usize).lower(),
             end: Address::from(0x10000usize).lower(),
         };
@@ -304,10 +303,10 @@ mod tests {
     fn find_free_front() {
         let start = Address::from(0x1000).lower();
         let end = Address::from(0x10000).lower();
-        let mut ledger = Ledger::<8>::new(Line::new(start, end));
+        let mut ledger = Ledger::<8>::new(Region::new(start, end));
 
         let region = ledger.find_free(Offset::from_items(2), true).unwrap();
-        let answer = Line {
+        let answer = Region {
             start: Address::from(0x1000).lower(),
             end: Address::from(0x3000).lower(),
         };
@@ -316,7 +315,7 @@ mod tests {
         ledger.insert(answer, None, true).unwrap();
 
         let region = ledger.find_free(Offset::from_items(2), true).unwrap();
-        let answer = Line {
+        let answer = Region {
             start: Address::from(0x3000).lower(),
             end: Address::from(0x5000).lower(),
         };
@@ -327,10 +326,10 @@ mod tests {
     fn find_free_back() {
         let start = Address::from(0x1000).lower();
         let end = Address::from(0x10000).lower();
-        let mut ledger = Ledger::<8>::new(Line::new(start, end));
+        let mut ledger = Ledger::<8>::new(Region::new(start, end));
 
         let region = ledger.find_free(Offset::from_items(2), false).unwrap();
-        let answer = Line {
+        let answer = Region {
             start: Address::from(0xe000).lower(),
             end: Address::from(0x10000).lower(),
         };
@@ -339,7 +338,7 @@ mod tests {
         ledger.insert(answer, None, true).unwrap();
 
         let region = ledger.find_free(Offset::from_items(2), false).unwrap();
-        let answer = Line {
+        let answer = Region {
             start: Address::from(0xc000).lower(),
             end: Address::from(0xe000).lower(),
         };
@@ -348,13 +347,13 @@ mod tests {
 
     #[test]
     fn merge_after() {
-        const REGION: Line<Address<usize, Page>> = Line {
+        const REGION: Region = Region {
             start: Address::new(0x5000),
             end: Address::new(0x6000),
         };
 
         const MERGED: Record = Record {
-            region: Line {
+            region: Region {
                 start: Address::new(0x4000),
                 end: Address::new(0x6000),
             },
@@ -372,13 +371,13 @@ mod tests {
 
     #[test]
     fn merge_before() {
-        const REGION: Line<Address<usize, Page>> = Line {
+        const REGION: Region = Region {
             start: Address::new(0x7000),
             end: Address::new(0x8000),
         };
 
         const MERGED: Record = Record {
-            region: Line {
+            region: Region {
                 start: Address::new(0x7000),
                 end: Address::new(0x9000),
             },
