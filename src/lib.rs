@@ -27,6 +27,12 @@ bitflags::bitflags! {
 }
 
 /// A ledger record.
+///
+/// Note that this data type is designed to:
+/// 1. be naturally aligned
+/// 2. divide evenly into a single page
+#[cfg_attr(target_pointer_width = "32", repr(C, align(16)))]
+#[cfg_attr(target_pointer_width = "64", repr(C, align(32)))]
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 pub struct Record {
     /// The covered region of memory.
@@ -275,7 +281,7 @@ mod tests {
     #[test]
     fn record_size_align() {
         assert_eq!(size_of::<Record>(), size_of::<usize>() * 4);
-        assert_eq!(align_of::<Record>(), align_of::<usize>());
+        assert_eq!(align_of::<Record>(), size_of::<Record>());
     }
 
     #[test]
