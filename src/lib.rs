@@ -13,20 +13,14 @@ use primordial::{Address, Offset, Page};
 /// A region of memory.
 pub type Region = lset::Line<Address<usize, Page>>;
 
-bitflags::bitflags! {
-    /// Memory access permissions.
-    #[derive(Default)]
-    #[repr(transparent)]
-    pub struct Access: usize {
-        /// Read access
-        const READ = 1 << 0;
-
-        /// Write access
-        const WRITE = 1 << 0;
-
-        /// Execute access
-        const EXECUTE = 1 << 0;
-    }
+/// An opaque token held by a record.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[repr(C, u64)]
+pub enum Token {
+    /// Security token
+    Access(u64),
+    /// Ledger length
+    Length(u64),
 }
 
 /// A ledger record.
@@ -36,29 +30,41 @@ bitflags::bitflags! {
 /// 2. divide evenly into a single page
 #[cfg_attr(target_pointer_width = "32", repr(C, align(16)))]
 #[cfg_attr(target_pointer_width = "64", repr(C, align(32)))]
-#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[repr(C, align(32))]
 pub struct Record {
+    /// An opaque token
+    token: Token,
     /// The covered region of memory.
     pub region: Region,
-
-    /// The access permissions.
-    pub access: Access,
-
-    length: usize,
 }
 
 impl Record {
-    const EMPTY: Record = Record {
-        region: Region::new(Address::NULL, Address::NULL),
-        access: Access::empty(),
-        length: 0,
-    };
+    const EMPTY: Record = Record::new(Region::new(Address::NULL, Address::NULL), Token::Access(0));
 
-    fn new(region: Region, access: Access) -> Self {
-        Record {
-            region,
-            access,
-            length: 0,
+    /// Create a new instance.
+    #[inline]
+    const fn new(region: Region, token: Token) -> Self {
+        Self { region, token }
+    }
+
+    /// Return the value of `Token::Access(u64)`.
+    #[inline]
+    fn access(&self) -> Option<u64> {
+        if let Token::Access(access) = self.token {
+            Some(access)
+        } else {
+            None
+        }
+    }
+
+    /// Return the value of `Token::Length(u64)`
+    #[inline]
+    fn length(&self) -> Option<u64> {
+        if let Token::Length(length) = self.token {
+            Some(length)
+        } else {
+            None
         }
     }
 }
@@ -113,12 +119,13 @@ impl<const N: usize> Ledger<N> {
     pub const fn new(region: Region) -> Self {
         let mut records = [Record::EMPTY; N];
         records[0].region = region;
+        records[0].token = Token::Length(0);
         Self { records }
     }
 
     /// Get an immutable view of the records.
     pub fn records(&self) -> &[Record] {
-        let used = self.records[0].length;
+        let used = self.records[0].length().unwrap() as usize;
         &self.records[1..][..used]
     }
 
@@ -126,7 +133,7 @@ impl<const N: usize> Ledger<N> {
     ///
     /// This function MUST NOT be public.
     fn records_mut(&mut self) -> &mut [Record] {
-        let used = self.records[0].length;
+        let used = self.records[0].length().unwrap() as usize;
         &mut self.records[1..][..used]
     }
 
@@ -134,11 +141,11 @@ impl<const N: usize> Ledger<N> {
     pub fn insert(
         &mut self,
         region: impl Into<Region>,
-        access: impl Into<Option<Access>>,
+        token: impl Into<Option<Token>>,
         commit: bool,
     ) -> Result<(), Error> {
         // Make sure the record is valid.
-        let record = Record::new(region.into(), access.into().unwrap_or_default());
+        let record = Record::new(region.into(), token.into().unwrap_or(Token::Access(0)));
         if record.region.start >= record.region.end {
             return Err(Error::InvalidRegion);
         }
@@ -163,7 +170,9 @@ impl<const N: usize> Ledger<N> {
             }
 
             // Potentially merge with the `prev` slot.
-            if prev.access == record.access && prev.region.end == record.region.start {
+            if prev.access().unwrap() == record.access().unwrap()
+                && prev.region.end == record.region.start
+            {
                 if commit {
                     prev.region.end = record.region.end;
                 }
@@ -173,7 +182,9 @@ impl<const N: usize> Ledger<N> {
 
             // Potentially merge with the `prev` slot
             if let Some(next) = iter.peek_mut() {
-                if next.access == record.access && next.region.start == record.region.end {
+                if next.access().unwrap() == record.access().unwrap()
+                    && next.region.start == record.region.end
+                {
                     if commit {
                         next.region.start = record.region.start;
                     }
@@ -183,10 +194,12 @@ impl<const N: usize> Ledger<N> {
             }
         }
 
-        // If there is room to append a new record.
-        if self.records[0].length + 2 <= self.records.len() {
-            self.records[0].length += 1;
-            self.records[self.records[0].length] = record;
+        // Add one because index 0 is the ledger:
+        let n = self.records[0].length().unwrap() as usize + 1;
+        if n < self.records.len() {
+            // No need to add one because n is already "shifted by one".
+            self.records[0].token = Token::Length(n as u64);
+            self.records[n] = record;
             self.sort();
             return Ok(());
         }
@@ -198,15 +211,9 @@ impl<const N: usize> Ledger<N> {
     pub fn find_free(&self, len: Offset<usize, Page>, front: bool) -> Result<Region, Error> {
         let region = self.records[0].region;
 
-        let start = Record {
-            region: Region::new(region.start, region.start),
-            ..Default::default()
-        };
+        let start = Record::new(Region::new(region.start, region.start), Token::Access(0));
 
-        let end = Record {
-            region: Region::new(region.end, region.end),
-            ..Default::default()
-        };
+        let end = Record::new(Region::new(region.end, region.end), Token::Access(0));
 
         // Synthesize a starting window.
         let first = [start, *self.records().first().unwrap_or(&end)];
@@ -251,8 +258,7 @@ mod tests {
             start: Address::new(0x4000usize),
             end: Address::new(0x5000usize),
         },
-        access: Access::empty(),
-        length: 0,
+        token: Token::Access(0),
     };
 
     const NEXT: Record = Record {
@@ -260,8 +266,7 @@ mod tests {
             start: Address::new(0x8000),
             end: Address::new(0x9000),
         },
-        access: Access::empty(),
-        length: 0,
+        token: Token::Access(0),
     };
 
     const INDX: Record = Record {
@@ -269,8 +274,7 @@ mod tests {
             start: Address::new(0x1000),
             end: Address::new(0x10000),
         },
-        access: Access::empty(),
-        length: 2,
+        token: Token::Length(2),
     };
 
     const LEDGER: Ledger<3> = Ledger {
@@ -296,7 +300,7 @@ mod tests {
 
         assert_eq!(ledger.records(), &[]);
         ledger.insert(region, None, true).unwrap();
-        assert_eq!(ledger.records(), &[Record::new(region, Access::empty())]);
+        assert_eq!(ledger.records(), &[Record::new(region, Token::Access(0))]);
     }
 
     #[test]
@@ -357,14 +361,13 @@ mod tests {
                 start: Address::new(0x4000),
                 end: Address::new(0x6000),
             },
-            access: Access::empty(),
-            length: 0,
+            token: Token::Access(0),
         };
 
         let mut ledger = LEDGER.clone();
-        ledger.insert(REGION, Access::empty(), true).unwrap();
+        ledger.insert(REGION, Token::Access(0), true).unwrap();
 
-        assert_eq!(ledger.records[0].length, 2);
+        assert_eq!(ledger.records[0].length().unwrap(), 2);
         assert_eq!(ledger.records[1], MERGED);
         assert_eq!(ledger.records[2], NEXT);
     }
@@ -381,14 +384,13 @@ mod tests {
                 start: Address::new(0x7000),
                 end: Address::new(0x9000),
             },
-            access: Access::empty(),
-            length: 0,
+            token: Token::Access(0),
         };
 
         let mut ledger = LEDGER.clone();
-        ledger.insert(REGION, Access::empty(), true).unwrap();
+        ledger.insert(REGION, Token::Access(0), true).unwrap();
 
-        assert_eq!(ledger.records[0].length, 2);
+        assert_eq!(ledger.records[0].length().unwrap(), 2);
         assert_eq!(ledger.records[1], PREV);
         assert_eq!(ledger.records[2], MERGED);
     }
