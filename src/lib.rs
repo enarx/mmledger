@@ -43,23 +43,16 @@ pub struct Record {
 
     /// The access permissions.
     pub access: Access,
-
-    length: usize,
 }
 
 impl Record {
     const EMPTY: Record = Record {
         region: Region::new(Address::NULL, Address::NULL),
         access: Access::empty(),
-        length: 0,
     };
 
     fn new(region: Region, access: Access) -> Self {
-        Record {
-            region,
-            access,
-            length: 0,
-        }
+        Record { region, access }
     }
 }
 
@@ -83,14 +76,11 @@ pub enum Error {
 }
 
 /// A virtual memory map ledger.
-//
-// Developer Note: the first record is reserved for the ledger bounds. We
-// structure it this way so that the user of the `Ledger` type has
-// fine-grained controls over allocation. For example, to allocate a 4k page,
-// the user can instantiate as `Ledger::<128>::new(..)`.
 #[derive(Clone, Debug)]
 pub struct Ledger<const N: usize> {
     records: [Record; N],
+    region: Region,
+    length: usize,
 }
 
 impl<const N: usize> Ledger<N> {
@@ -111,23 +101,23 @@ impl<const N: usize> Ledger<N> {
 
     /// Create a new instance.
     pub const fn new(region: Region) -> Self {
-        let mut records = [Record::EMPTY; N];
-        records[0].region = region;
-        Self { records }
+        Self {
+            records: [Record::EMPTY; N],
+            region,
+            length: 0,
+        }
     }
 
     /// Get an immutable view of the records.
     pub fn records(&self) -> &[Record] {
-        let used = self.records[0].length;
-        &self.records[1..][..used]
+        &self.records[..self.length]
     }
 
     /// Get a mutable view of the records.
     ///
     /// This function MUST NOT be public.
     fn records_mut(&mut self) -> &mut [Record] {
-        let used = self.records[0].length;
-        &mut self.records[1..][..used]
+        &mut self.records[..self.length]
     }
 
     /// Insert a new record into the ledger.
@@ -144,8 +134,7 @@ impl<const N: usize> Ledger<N> {
         }
 
         // Make sure the record fits in our adress space.
-        let region = self.records[0].region;
-        if record.region.start < region.start || record.region.end > region.end {
+        if record.region.start < self.region.start || record.region.end > self.region.end {
             return Err(Error::Overflow);
         }
 
@@ -184,9 +173,9 @@ impl<const N: usize> Ledger<N> {
         }
 
         // If there is room to append a new record.
-        if self.records[0].length + 2 <= self.records.len() {
-            self.records[0].length += 1;
-            self.records[self.records[0].length] = record;
+        if self.length + 2 <= self.records.len() {
+            self.records[self.length] = record;
+            self.length += 1;
             self.sort();
             return Ok(());
         }
@@ -196,15 +185,13 @@ impl<const N: usize> Ledger<N> {
 
     /// Find space for a free region.
     pub fn find_free(&self, len: Offset<usize, Page>, front: bool) -> Result<Region, Error> {
-        let region = self.records[0].region;
-
         let start = Record {
-            region: Region::new(region.start, region.start),
+            region: Region::new(self.region.start, self.region.start),
             ..Default::default()
         };
 
         let end = Record {
-            region: Region::new(region.end, region.end),
+            region: Region::new(self.region.end, self.region.end),
             ..Default::default()
         };
 
@@ -223,15 +210,17 @@ impl<const N: usize> Ledger<N> {
         // Iterate through the windows.
         if front {
             while let Some([l, r]) = iter.next() {
-                if r.region.end - l.region.start > len {
-                    return Ok(Span::new(l.region.end, len).into());
+                let region = Region::from(Span::new(l.region.end, len));
+                if region > l.region && region < r.region {
+                    return Ok(region);
                 }
             }
         } else {
             let mut iter = iter.rev();
             while let Some([l, r]) = iter.next() {
-                if r.region.end - l.region.start > len {
-                    return Ok(Span::new(r.region.start - len, len).into());
+                let region = Region::from(Span::new(r.region.start - len, len));
+                if region > l.region && region < r.region {
+                    return Ok(region);
                 }
             }
         }
@@ -247,34 +236,19 @@ mod tests {
     use core::mem::{align_of, size_of};
 
     const PREV: Record = Record {
-        region: Region {
-            start: Address::new(0x4000usize),
-            end: Address::new(0x5000usize),
-        },
+        region: Region::new(Address::new(0x2000), Address::new(0x4000)),
         access: Access::empty(),
-        length: 0,
     };
 
     const NEXT: Record = Record {
-        region: Region {
-            start: Address::new(0x8000),
-            end: Address::new(0x9000),
-        },
+        region: Region::new(Address::new(0x7000), Address::new(0x8000)),
         access: Access::empty(),
-        length: 0,
     };
 
-    const INDX: Record = Record {
-        region: Region {
-            start: Address::new(0x1000),
-            end: Address::new(0x10000),
-        },
-        access: Access::empty(),
+    const LEDGER: Ledger<4> = Ledger {
+        records: [PREV, NEXT, Record::EMPTY, Record::EMPTY],
+        region: Region::new(Address::new(0x0000), Address::new(0xa000)),
         length: 2,
-    };
-
-    const LEDGER: Ledger<3> = Ledger {
-        records: [INDX, PREV, NEXT],
     };
 
     #[test]
@@ -301,95 +275,51 @@ mod tests {
 
     #[test]
     fn find_free_front() {
-        let start = Address::from(0x1000).lower();
-        let end = Address::from(0x10000).lower();
-        let mut ledger = Ledger::<8>::new(Region::new(start, end));
+        let region = LEDGER.find_free(Offset::from_items(2), true).unwrap();
+        assert_eq!(Address::new(0x0000)..Address::new(0x2000), region.into());
 
-        let region = ledger.find_free(Offset::from_items(2), true).unwrap();
-        let answer = Region {
-            start: Address::from(0x1000).lower(),
-            end: Address::from(0x3000).lower(),
-        };
-        assert_eq!(region, answer);
-
-        ledger.insert(answer, None, true).unwrap();
-
-        let region = ledger.find_free(Offset::from_items(2), true).unwrap();
-        let answer = Region {
-            start: Address::from(0x3000).lower(),
-            end: Address::from(0x5000).lower(),
-        };
-        assert_eq!(region, answer);
+        let region = LEDGER.find_free(Offset::from_items(3), true).unwrap();
+        assert_eq!(Address::new(0x4000)..Address::new(0x7000), region.into());
     }
 
     #[test]
     fn find_free_back() {
-        let start = Address::from(0x1000).lower();
-        let end = Address::from(0x10000).lower();
-        let mut ledger = Ledger::<8>::new(Region::new(start, end));
+        let region = LEDGER.find_free(Offset::from_items(2), false).unwrap();
+        assert_eq!(Address::new(0x8000)..Address::new(0xa000), region.into());
 
-        let region = ledger.find_free(Offset::from_items(2), false).unwrap();
-        let answer = Region {
-            start: Address::from(0xe000).lower(),
-            end: Address::from(0x10000).lower(),
-        };
-        assert_eq!(region, answer);
-
-        ledger.insert(answer, None, true).unwrap();
-
-        let region = ledger.find_free(Offset::from_items(2), false).unwrap();
-        let answer = Region {
-            start: Address::from(0xc000).lower(),
-            end: Address::from(0xe000).lower(),
-        };
-        assert_eq!(region, answer);
+        let region = LEDGER.find_free(Offset::from_items(3), false).unwrap();
+        assert_eq!(Address::new(0x4000)..Address::new(0x7000), region.into());
     }
 
     #[test]
     fn merge_after() {
-        const REGION: Region = Region {
-            start: Address::new(0x5000),
-            end: Address::new(0x6000),
-        };
-
+        const REGION: Region = Region::new(Address::new(0x4000), Address::new(0x6000));
         const MERGED: Record = Record {
-            region: Region {
-                start: Address::new(0x4000),
-                end: Address::new(0x6000),
-            },
+            region: Region::new(Address::new(0x2000), Address::new(0x6000)),
             access: Access::empty(),
-            length: 0,
         };
 
         let mut ledger = LEDGER.clone();
         ledger.insert(REGION, Access::empty(), true).unwrap();
 
-        assert_eq!(ledger.records[0].length, 2);
-        assert_eq!(ledger.records[1], MERGED);
-        assert_eq!(ledger.records[2], NEXT);
+        assert_eq!(ledger.length, 2);
+        assert_eq!(ledger.records[0], MERGED);
+        assert_eq!(ledger.records[1], NEXT);
     }
 
     #[test]
     fn merge_before() {
-        const REGION: Region = Region {
-            start: Address::new(0x7000),
-            end: Address::new(0x8000),
-        };
-
+        const REGION: Region = Region::new(Address::new(0x8000), Address::new(0x9000));
         const MERGED: Record = Record {
-            region: Region {
-                start: Address::new(0x7000),
-                end: Address::new(0x9000),
-            },
+            region: Region::new(Address::new(0x7000), Address::new(0x9000)),
             access: Access::empty(),
-            length: 0,
         };
 
         let mut ledger = LEDGER.clone();
         ledger.insert(REGION, Access::empty(), true).unwrap();
 
-        assert_eq!(ledger.records[0].length, 2);
-        assert_eq!(ledger.records[1], PREV);
-        assert_eq!(ledger.records[2], MERGED);
+        assert_eq!(ledger.length, 2);
+        assert_eq!(ledger.records[0], PREV);
+        assert_eq!(ledger.records[1], MERGED);
     }
 }
