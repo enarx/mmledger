@@ -5,9 +5,7 @@
 #![deny(missing_docs)]
 #![forbid(unsafe_code)]
 
-use core::cmp::Ordering;
-
-use lset::{Empty, Span};
+use lset::Span;
 use primordial::{Address, Offset, Page};
 
 /// A region of memory.
@@ -84,21 +82,6 @@ pub struct Ledger<const N: usize> {
 }
 
 impl<const N: usize> Ledger<N> {
-    /// Sort the records.
-    fn sort(&mut self) {
-        self.records_mut().sort_unstable_by(|l, r| {
-            if l.region == r.region {
-                Ordering::Equal
-            } else if l.region.is_empty() {
-                Ordering::Greater
-            } else if r.region.is_empty() {
-                Ordering::Less
-            } else {
-                l.region.start.cmp(&r.region.start)
-            }
-        })
-    }
-
     /// Create a new instance.
     pub const fn new(region: Region) -> Self {
         Self {
@@ -140,6 +123,7 @@ impl<const N: usize> Ledger<N> {
 
         // Loop over the records looking for merges.
         let mut iter = self.records_mut().iter_mut().peekable();
+        let mut index = 0;
         while let Some(prev) = iter.next() {
             if prev.region.intersection(record.region).is_some() {
                 return Err(Error::Overlap);
@@ -170,13 +154,21 @@ impl<const N: usize> Ledger<N> {
                     return Ok(());
                 }
             }
+
+            // Check, if the in-between space is free, or not.
+            if let Some(next) = iter.peek() {
+                if record.region.start > prev.region.end && record.region.end < next.region.start {
+                    break;
+                }
+            }
+
+            index += 1;
         }
 
-        // If there is room to append a new record.
         if self.length + 2 <= self.records.len() {
-            self.records[self.length] = record;
+            self.records[index..].rotate_right(1);
+            self.records[index] = record;
             self.length += 1;
-            self.sort();
             return Ok(());
         }
 
