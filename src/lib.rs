@@ -1,5 +1,4 @@
 //! A ledger for memory mappings.
-
 #![cfg_attr(not(test), no_std)]
 #![deny(clippy::all)]
 #![deny(missing_docs)]
@@ -149,22 +148,6 @@ impl<const N: usize> Ledger<N> {
                     return Err(Error::Overlap);
                 }
             }
-
-            // Potentially merge with the `prev` slot.
-            if prev.access == record.access && prev.region.end == record.region.start {
-                prev.region.end = record.region.end;
-
-                return Ok(());
-            }
-
-            // Potentially merge with the `prev` slot
-            if let Some(next) = iter.peek_mut() {
-                if next.access == record.access && next.region.start == record.region.end {
-                    next.region.start = record.region.start;
-
-                    return Ok(());
-                }
-            }
         }
 
         // If there is room to append a new record.
@@ -172,6 +155,7 @@ impl<const N: usize> Ledger<N> {
             self.records[self.length] = record;
             self.length += 1;
             self.sort();
+            self.merge();
             return Ok(());
         }
 
@@ -221,6 +205,32 @@ impl<const N: usize> Ledger<N> {
         }
 
         Err(Error::OutOfSpace)
+    }
+
+    /// Merge adjacent and uniform regions.
+    fn merge(&mut self) {
+        let mut i = 0;
+        loop {
+            if i == self.length - 1 {
+                break;
+            }
+
+            let prev = self.records[i];
+            let next = self.records[i + 1];
+
+            // Order consistency check:
+            assert!(prev.region.start < prev.region.end);
+            assert!(next.region.start < next.region.end);
+            assert!(prev.region.end <= next.region.start);
+
+            if prev.region.end == next.region.start && prev.access == next.access {
+                self.records[i..].rotate_left(1);
+                self.records[self.length - 1] = Record::EMPTY;
+                self.records[i].region.start = prev.region.start;
+            }
+
+            i += 1;
+        }
     }
 }
 
@@ -295,8 +305,13 @@ mod tests {
         };
 
         let mut ledger = LEDGER.clone();
+
+        println!("L: {}", ledger.length);
+        dump_ledger(&ledger);
         ledger.insert(REGION, Access::empty()).unwrap();
 
+        println!("L: {}", ledger.length);
+        dump_ledger(&ledger);
         assert_eq!(ledger.length, 2);
         assert_eq!(ledger.records[0], MERGED);
         assert_eq!(ledger.records[1], NEXT);
@@ -316,5 +331,36 @@ mod tests {
         assert_eq!(ledger.length, 2);
         assert_eq!(ledger.records[0], PREV);
         assert_eq!(ledger.records[1], MERGED);
+    }
+
+    fn dump_ledger<const N: usize>(ledger: &Ledger<N>) {
+        for record in ledger.records() {
+            println!("{:#016x} {:#016x}", record.region.start, record.region.end);
+        }
+    }
+
+    #[test]
+    fn merge_outer_sides() {
+        const ADJ_L: Region = Region::new(Address::new(0x3000), Address::new(0x4000));
+        const ADJ_R: Region = Region::new(Address::new(0x5000), Address::new(0x6000));
+        const MERGED: Record = Record {
+            region: Region::new(Address::new(0x3000), Address::new(0x6000)),
+            access: Access::empty(),
+        };
+
+        let mut ledger = LEDGER.clone();
+
+        println!("BEGIN");
+        dump_ledger(&ledger);
+
+        ledger.insert(ADJ_L, Access::empty()).unwrap();
+        ledger.insert(ADJ_R, Access::empty()).unwrap();
+
+        println!("END");
+        dump_ledger(&ledger);
+
+        assert_eq!(ledger.length, 2);
+        assert_eq!(ledger.records[1], MERGED);
+        assert_eq!(ledger.records[2], NEXT);
     }
 }
