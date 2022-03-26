@@ -260,6 +260,56 @@ impl<const N: usize> Ledger<N> {
 
         Err(Error::OutOfSpace)
     }
+
+    /// Delete sub-regions.
+    pub fn delete(&mut self, region: Region) -> Result<(), Error> {
+        if region.start >= region.end {
+            return Err(Error::InvalidRegion);
+        }
+
+        if region.start < self.region.start || region.end > self.region.end {
+            return Err(Error::Overflow);
+        }
+
+        let mut index = 0;
+
+        while index < self.length {
+            let record_start = self.records[index].region.start;
+            let record_end = self.records[index].region.end;
+
+            if region.start <= record_start && region.end >= record_end {
+                self.remove(index);
+                // Jump without `index += 1` so that a left-shifted record will
+                // not be skipped:
+                continue;
+            }
+
+            if region.start > record_start && region.end < record_end {
+                let before: Record = Record {
+                    region: Region::new(record_start, region.start),
+                    access: Access::empty(),
+                };
+                let after: Record = Record {
+                    region: Region::new(region.end, record_end),
+                    access: Access::empty(),
+                };
+                // Put `after` first because it will be right-shifted by `Self::commit()`.
+                self.records[index] = after;
+
+                return self.insert(index, before);
+            }
+
+            if region.start > record_start {
+                self.records[index].region.end = region.start;
+            } else {
+                self.records[index].region.start = region.end;
+            }
+
+            index += 1;
+        }
+
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -467,5 +517,75 @@ mod tests {
 
         assert_eq!(ledger.length, 1);
         assert_eq!(ledger.records[0], MERGED);
+    }
+
+    #[test]
+    fn delete_after() {
+        const RECORD: Record = Record {
+            region: Region::new(PREV.region.end, NEXT.region.start),
+            access: Access::empty(),
+        };
+
+        const MERGED: Record = Record {
+            region: Region::new(PREV.region.start, NEXT.region.start),
+            access: Access::empty(),
+        };
+
+        let mut ledger = LEDGER.clone();
+        ledger.add(RECORD).unwrap();
+        ledger.delete(NEXT.region).unwrap();
+
+        assert_eq!(ledger.length, 1);
+        assert_eq!(ledger.records[0], MERGED);
+    }
+
+    #[test]
+    fn delete_all() {
+        const RECORD: Record = Record {
+            region: Region::new(LEDGER.region.start, LEDGER.region.end),
+            access: Access::empty(),
+        };
+
+        let mut ledger = LEDGER.clone();
+        assert_eq!(ledger.length, 2);
+
+        ledger.delete(RECORD.region).unwrap();
+        assert_eq!(ledger.length, 0);
+    }
+
+    #[test]
+    fn delete_before() {
+        const RECORD: Record = Record {
+            region: Region::new(PREV.region.end, NEXT.region.start),
+            access: Access::empty(),
+        };
+
+        const MERGED: Record = Record {
+            region: Region::new(PREV.region.end, NEXT.region.end),
+            access: Access::empty(),
+        };
+
+        let mut ledger = LEDGER.clone();
+        ledger.add(RECORD).unwrap();
+        ledger.delete(PREV.region).unwrap();
+
+        assert_eq!(ledger.length, 1);
+        assert_eq!(ledger.records[0], MERGED);
+    }
+
+    #[test]
+    fn delete_split() {
+        const RECORD: Record = Record {
+            region: Region::new(PREV.region.end, NEXT.region.start),
+            access: Access::empty(),
+        };
+
+        let mut ledger = LEDGER.clone();
+        ledger.add(RECORD).unwrap();
+        ledger.delete(RECORD.region).unwrap();
+
+        assert_eq!(ledger.length, 2);
+        assert_eq!(ledger.records[0], PREV);
+        assert_eq!(ledger.records[1], NEXT);
     }
 }
