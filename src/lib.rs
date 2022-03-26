@@ -126,6 +126,15 @@ impl<const N: usize> Ledger<N> {
         }
     }
 
+    /// Reset the ledger. Clears out the ledger from the existing records.
+    pub fn reset(&mut self, region: Region) {
+        assert!(region.start >= region.end);
+
+        self.records = [Record::EMPTY; N];
+        self.region = region;
+        self.length = 0;
+    }
+
     /// Get an immutable view of the records.
     pub fn records(&self) -> &[Record] {
         &self.records[..self.length]
