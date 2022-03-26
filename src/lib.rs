@@ -127,14 +127,8 @@ impl<const N: usize> Ledger<N> {
     }
 
     /// Insert a new record into the ledger.
-    pub fn insert(
-        &mut self,
-        region: impl Into<Region>,
-        access: impl Into<Option<Access>>,
-        commit: bool,
-    ) -> Result<(), Error> {
+    pub fn insert(&mut self, record: Record) -> Result<(), Error> {
         // Make sure the record is valid.
-        let record = access.into().unwrap_or_default().record(region.into());
         if record.region.start >= record.region.end {
             return Err(Error::InvalidRegion);
         }
@@ -159,20 +153,14 @@ impl<const N: usize> Ledger<N> {
 
             // Potentially merge with the `prev` slot.
             if prev.access == record.access && prev.region.end == record.region.start {
-                if commit {
-                    prev.region.end = record.region.end;
-                }
-
+                prev.region.end = record.region.end;
                 return Ok(());
             }
 
             // Potentially merge with the `prev` slot
             if let Some(next) = iter.peek_mut() {
                 if next.access == record.access && next.region.start == record.region.end {
-                    if commit {
-                        next.region.start = record.region.start;
-                    }
-
+                    next.region.start = record.region.start;
                     return Ok(());
                 }
             }
@@ -265,18 +253,18 @@ mod tests {
 
     #[test]
     fn insert() {
+        const INSERT: Record = Record {
+            region: Region::new(Address::new(0xe000usize), Address::new(0x10000usize)),
+            access: Access::empty(),
+        };
+
         let start = Address::from(0x1000usize).lower();
         let end = Address::from(0x10000usize).lower();
         let mut ledger = Ledger::<8>::new(Region::new(start, end));
 
-        let region = Region {
-            start: Address::from(0xe000usize).lower(),
-            end: Address::from(0x10000usize).lower(),
-        };
-
         assert_eq!(ledger.records(), &[]);
-        ledger.insert(region, None, true).unwrap();
-        assert_eq!(ledger.records(), &[Access::empty().record(region)]);
+        ledger.insert(INSERT).unwrap();
+        assert_eq!(ledger.records(), &[INSERT]);
     }
 
     #[test]
@@ -299,14 +287,18 @@ mod tests {
 
     #[test]
     fn merge_after() {
-        const REGION: Region = Region::new(Address::new(0x4000), Address::new(0x6000));
+        const INSERT: Record = Record {
+            region: Region::new(Address::new(0x4000), Address::new(0x6000)),
+            access: Access::empty(),
+        };
+
         const MERGED: Record = Record {
             region: Region::new(Address::new(0x2000), Address::new(0x6000)),
             access: Access::empty(),
         };
 
         let mut ledger = LEDGER.clone();
-        ledger.insert(REGION, Access::empty(), true).unwrap();
+        ledger.insert(INSERT).unwrap();
 
         assert_eq!(ledger.length, 2);
         assert_eq!(ledger.records[0], MERGED);
@@ -315,14 +307,18 @@ mod tests {
 
     #[test]
     fn merge_before() {
-        const REGION: Region = Region::new(Address::new(0x8000), Address::new(0x9000));
+        const INSERT: Record = Record {
+            region: Region::new(Address::new(0x8000), Address::new(0x9000)),
+            access: Access::empty(),
+        };
+
         const MERGED: Record = Record {
             region: Region::new(Address::new(0x7000), Address::new(0x9000)),
             access: Access::empty(),
         };
 
         let mut ledger = LEDGER.clone();
-        ledger.insert(REGION, Access::empty(), true).unwrap();
+        ledger.insert(INSERT).unwrap();
 
         assert_eq!(ledger.length, 2);
         assert_eq!(ledger.records[0], PREV);
