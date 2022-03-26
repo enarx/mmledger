@@ -29,6 +29,16 @@ bitflags::bitflags! {
     }
 }
 
+impl Access {
+    /// Creates a record for these permissions and the given region.
+    pub const fn record(self, region: Region) -> Record {
+        Record {
+            region,
+            access: self,
+        }
+    }
+}
+
 /// A ledger record.
 ///
 /// Note that this data type is designed to:
@@ -50,10 +60,6 @@ impl Record {
         region: Region::new(Address::NULL, Address::NULL),
         access: Access::empty(),
     };
-
-    fn new(region: Region, access: Access) -> Self {
-        Record { region, access }
-    }
 }
 
 /// Ledger error conditions.
@@ -128,7 +134,7 @@ impl<const N: usize> Ledger<N> {
         commit: bool,
     ) -> Result<(), Error> {
         // Make sure the record is valid.
-        let record = Record::new(region.into(), access.into().unwrap_or_default());
+        let record = access.into().unwrap_or_default().record(region.into());
         if record.region.start >= record.region.end {
             return Err(Error::InvalidRegion);
         }
@@ -270,7 +276,7 @@ mod tests {
 
         assert_eq!(ledger.records(), &[]);
         ledger.insert(region, None, true).unwrap();
-        assert_eq!(ledger.records(), &[Record::new(region, Access::empty())]);
+        assert_eq!(ledger.records(), &[Access::empty().record(region)]);
     }
 
     #[test]
