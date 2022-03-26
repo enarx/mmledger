@@ -178,7 +178,7 @@ impl<const N: usize> Ledger<N> {
             index += 1;
         }
 
-        if self.length + 2 <= self.records.len() {
+        if self.length + 1 <= self.records.len() {
             self.records[index..].rotate_right(1);
             self.records[index] = record;
             self.length += 1;
