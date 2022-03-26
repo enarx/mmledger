@@ -108,7 +108,6 @@ impl<const N: usize> Ledger<N> {
         &mut self,
         region: impl Into<Region>,
         access: impl Into<Option<Access>>,
-        commit: bool,
     ) -> Result<(), Error> {
         // Make sure the record is valid.
         let record = Record::new(region.into(), access.into().unwrap_or_default());
@@ -124,6 +123,8 @@ impl<const N: usize> Ledger<N> {
         // Loop over the records looking for merges.
         let mut iter = self.records_mut().iter_mut().peekable();
         let mut index = 0;
+        let mut merges = (false, false);
+
         while let Some(prev) = iter.next() {
             if prev.region.intersection(record.region).is_some() {
                 return Err(Error::Overlap);
@@ -137,20 +138,32 @@ impl<const N: usize> Ledger<N> {
 
             // Potentially merge with the `prev` slot.
             if prev.access == record.access && prev.region.end == record.region.start {
-                if commit {
-                    prev.region.end = record.region.end;
-                }
-
-                return Ok(());
+                merges.0 = true;
             }
 
             // Potentially merge with the `prev` slot
             if let Some(next) = iter.peek_mut() {
                 if next.access == record.access && next.region.start == record.region.end {
-                    if commit {
-                        next.region.start = record.region.start;
-                    }
+                    merges.1 = true;
+                }
+            }
 
+            match merges {
+                (false, false) => (),
+                (true, false) => {
+                    prev.region.end = record.region.end;
+                    return Ok(());
+                }
+                (false, true) => {
+                    let next = iter.peek_mut().unwrap();
+                    next.region.start = record.region.start;
+                    return Ok(());
+                }
+                (true, true) => {
+                    self.records[index + 1].region.start = self.records[index].region.start;
+                    self.records[index..].rotate_left(1);
+                    self.records[self.records.len() - 1] = Record::EMPTY;
+                    self.length -= 1;
                     return Ok(());
                 }
             }
@@ -261,7 +274,7 @@ mod tests {
         };
 
         assert_eq!(ledger.records(), &[]);
-        ledger.insert(region, None, true).unwrap();
+        ledger.insert(region, None).unwrap();
         assert_eq!(ledger.records(), &[Record::new(region, Access::empty())]);
     }
 
@@ -292,7 +305,7 @@ mod tests {
         };
 
         let mut ledger = LEDGER.clone();
-        ledger.insert(REGION, Access::empty(), true).unwrap();
+        ledger.insert(REGION, Access::empty()).unwrap();
 
         assert_eq!(ledger.length, 2);
         assert_eq!(ledger.records[0], MERGED);
@@ -308,10 +321,25 @@ mod tests {
         };
 
         let mut ledger = LEDGER.clone();
-        ledger.insert(REGION, Access::empty(), true).unwrap();
+        ledger.insert(REGION, Access::empty()).unwrap();
 
         assert_eq!(ledger.length, 2);
         assert_eq!(ledger.records[0], PREV);
         assert_eq!(ledger.records[1], MERGED);
+    }
+
+    #[test]
+    fn merge_all() {
+        const REGION: Region = Region::new(PREV.region.end, NEXT.region.start);
+        const MERGED: Record = Record {
+            region: Region::new(PREV.region.start, NEXT.region.end),
+            access: Access::empty(),
+        };
+
+        let mut ledger = LEDGER.clone();
+        ledger.insert(REGION, Access::empty()).unwrap();
+
+        assert_eq!(ledger.length, 1);
+        assert_eq!(ledger.records[0], MERGED);
     }
 }
