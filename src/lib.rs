@@ -5,9 +5,7 @@
 #![deny(missing_docs)]
 #![forbid(unsafe_code)]
 
-use core::cmp::Ordering;
-
-use lset::{Empty, Span};
+use lset::Span;
 use primordial::{Address, Offset, Page};
 
 /// A region of memory.
@@ -60,6 +58,10 @@ impl Record {
         region: Region::new(Address::NULL, Address::NULL),
         access: Access::empty(),
     };
+
+    fn is_between(&self, lhs: &Record, rhs: &Record) -> bool {
+        lhs.region < self.region && self.region < rhs.region
+    }
 }
 
 /// Ledger error conditions.
@@ -90,19 +92,29 @@ pub struct Ledger<const N: usize> {
 }
 
 impl<const N: usize> Ledger<N> {
-    /// Sort the records.
-    fn sort(&mut self) {
-        self.records_mut().sort_unstable_by(|l, r| {
-            if l.region == r.region {
-                Ordering::Equal
-            } else if l.region.is_empty() {
-                Ordering::Greater
-            } else if r.region.is_empty() {
-                Ordering::Less
-            } else {
-                l.region.start.cmp(&r.region.start)
-            }
-        })
+    /// Remove the record at index.
+    fn remove(&mut self, index: usize) {
+        assert!(self.length > index);
+
+        self.records[index] = Record::EMPTY;
+        self.records[index..].rotate_left(1);
+        self.length -= 1;
+    }
+
+    /// Insert a record at the index, shifting later records right.
+    fn insert(&mut self, index: usize, record: Record) -> Result<(), Error> {
+        assert!(self.length <= self.records.len());
+        assert!(self.length >= index);
+
+        if self.length == self.records.len() {
+            return Err(Error::OutOfCapacity);
+        }
+
+        self.records[index..].rotate_right(1);
+        self.records[index] = record;
+        self.length += 1;
+
+        Ok(())
     }
 
     /// Create a new instance.
@@ -126,8 +138,8 @@ impl<const N: usize> Ledger<N> {
         &mut self.records[..self.length]
     }
 
-    /// Insert a new record into the ledger.
-    pub fn insert(&mut self, record: Record) -> Result<(), Error> {
+    /// Adds a new record to the ledger, potentially merging with existing records.
+    pub fn add(&mut self, record: Record) -> Result<(), Error> {
         // Make sure the record is valid.
         if record.region.start >= record.region.end {
             return Err(Error::InvalidRegion);
@@ -139,42 +151,69 @@ impl<const N: usize> Ledger<N> {
         }
 
         // Loop over the records looking for merges.
-        let mut iter = self.records_mut().iter_mut().peekable();
-        while let Some(prev) = iter.next() {
-            if prev.region.intersection(record.region).is_some() {
-                return Err(Error::Overlap);
-            }
+        for i in 0..self.length + 1 {
+            let (lhs, rhs) = self.records_mut().split_at_mut(i);
+            let mut prev = lhs.last_mut();
+            let mut this = rhs.first_mut();
+            let mut merges = (false, false);
 
-            if let Some(next) = iter.peek() {
-                if next.region.intersection(record.region).is_some() {
+            // Check for overlap.
+            if let Some(this) = this.as_mut() {
+                if this.region.intersection(record.region).is_some() {
                     return Err(Error::Overlap);
                 }
             }
 
-            // Potentially merge with the `prev` slot.
-            if prev.access == record.access && prev.region.end == record.region.start {
-                prev.region.end = record.region.end;
-                return Ok(());
-            }
-
-            // Potentially merge with the `prev` slot
-            if let Some(next) = iter.peek_mut() {
-                if next.access == record.access && next.region.start == record.region.end {
-                    next.region.start = record.region.start;
-                    return Ok(());
+            // Potentially merge after `prev`.
+            if let Some(prev) = prev.as_mut() {
+                if prev.access == record.access && prev.region.end == record.region.start {
+                    prev.region.end = record.region.end;
+                    merges.0 = true;
                 }
             }
+
+            // Potentially merge before `this`.
+            if let Some(this) = this.as_mut() {
+                if this.access == record.access && this.region.start == record.region.end {
+                    this.region.start = record.region.start;
+                    merges.1 = true;
+                }
+            }
+
+            match (merges, (prev, this)) {
+                // If there is a gap between two records, insert.
+                ((false, false), (Some(prev), Some(this))) if record.is_between(prev, this) => {
+                    return self.insert(i, record);
+                }
+
+                // If we are at the start, insert.
+                ((false, false), (None, Some(this))) if record.region < this.region => {
+                    return self.insert(i, record);
+                }
+
+                // If we are at the end, insert.
+                ((false, false), (Some(prev), None)) if record.region > prev.region => {
+                    return self.insert(i, record);
+                }
+
+                // If this is the first record, insert.
+                ((false, false), (None, None)) => return self.insert(i, record),
+
+                // We merged in both directions. Merge again.
+                ((true, true), (Some(prev), Some(this))) => {
+                    this.region.start = prev.region.start;
+                    self.remove(i - 1);
+                    return Ok(());
+                }
+
+                ((true, true), ..) => unreachable!(),
+                ((true, false), ..) => return Ok(()),
+                ((false, true), ..) => return Ok(()),
+                ((false, false), ..) => (),
+            }
         }
 
-        // If there is room to append a new record.
-        if self.length + 2 <= self.records.len() {
-            self.records[self.length] = record;
-            self.length += 1;
-            self.sort();
-            return Ok(());
-        }
-
-        Err(Error::OutOfCapacity)
+        unreachable!()
     }
 
     /// Find space for a free region.
@@ -230,7 +269,7 @@ mod tests {
     use core::mem::{align_of, size_of};
 
     const PREV: Record = Record {
-        region: Region::new(Address::new(0x2000), Address::new(0x4000)),
+        region: Region::new(Address::new(0x2000), Address::new(0x3000)),
         access: Access::empty(),
     };
 
@@ -252,19 +291,45 @@ mod tests {
     }
 
     #[test]
-    fn insert() {
-        const INSERT: Record = Record {
-            region: Region::new(Address::new(0xe000usize), Address::new(0x10000usize)),
+    fn insert_start() {
+        const RECORD: Record = Record {
+            region: Region::new(Address::new(0x0000), Address::new(0x1000)),
             access: Access::empty(),
         };
 
-        let start = Address::from(0x1000usize).lower();
-        let end = Address::from(0x10000usize).lower();
-        let mut ledger = Ledger::<8>::new(Region::new(start, end));
+        let mut ledger = LEDGER.clone();
+        assert_eq!(ledger.records(), &[PREV, NEXT]);
 
-        assert_eq!(ledger.records(), &[]);
-        ledger.insert(INSERT).unwrap();
-        assert_eq!(ledger.records(), &[INSERT]);
+        ledger.add(RECORD).unwrap();
+        assert_eq!(ledger.records(), &[RECORD, PREV, NEXT]);
+    }
+
+    #[test]
+    fn insert_middle() {
+        const RECORD: Record = Record {
+            region: Region::new(Address::new(0x5000), Address::new(0x6000)),
+            access: Access::empty(),
+        };
+
+        let mut ledger = LEDGER.clone();
+        assert_eq!(ledger.records(), &[PREV, NEXT]);
+
+        ledger.add(RECORD).unwrap();
+        assert_eq!(ledger.records(), &[PREV, RECORD, NEXT]);
+    }
+
+    #[test]
+    fn insert_end() {
+        const RECORD: Record = Record {
+            region: Region::new(Address::new(0x9000), Address::new(0xa000)),
+            access: Access::empty(),
+        };
+
+        let mut ledger = LEDGER.clone();
+        assert_eq!(ledger.records(), &[PREV, NEXT]);
+
+        ledger.add(RECORD).unwrap();
+        assert_eq!(ledger.records(), &[PREV, NEXT, RECORD]);
     }
 
     #[test]
@@ -273,7 +338,7 @@ mod tests {
         assert_eq!(Address::new(0x0000)..Address::new(0x2000), region.into());
 
         let region = LEDGER.find_free(Offset::from_items(3), true).unwrap();
-        assert_eq!(Address::new(0x4000)..Address::new(0x7000), region.into());
+        assert_eq!(Address::new(0x3000)..Address::new(0x6000), region.into());
     }
 
     #[test]
@@ -286,19 +351,19 @@ mod tests {
     }
 
     #[test]
-    fn merge_after() {
-        const INSERT: Record = Record {
-            region: Region::new(Address::new(0x4000), Address::new(0x6000)),
+    fn merge_before_prev() {
+        const RECORD: Record = Record {
+            region: Region::new(Address::new(0x1000), Address::new(0x2000)),
             access: Access::empty(),
         };
 
         const MERGED: Record = Record {
-            region: Region::new(Address::new(0x2000), Address::new(0x6000)),
+            region: Region::new(Address::new(0x1000), Address::new(0x3000)),
             access: Access::empty(),
         };
 
         let mut ledger = LEDGER.clone();
-        ledger.insert(INSERT).unwrap();
+        ledger.add(RECORD).unwrap();
 
         assert_eq!(ledger.length, 2);
         assert_eq!(ledger.records[0], MERGED);
@@ -306,8 +371,48 @@ mod tests {
     }
 
     #[test]
-    fn merge_before() {
-        const INSERT: Record = Record {
+    fn merge_before_next() {
+        const RECORD: Record = Record {
+            region: Region::new(Address::new(0x6000), Address::new(0x7000)),
+            access: Access::empty(),
+        };
+
+        const MERGED: Record = Record {
+            region: Region::new(Address::new(0x6000), Address::new(0x8000)),
+            access: Access::empty(),
+        };
+
+        let mut ledger = LEDGER.clone();
+        ledger.add(RECORD).unwrap();
+
+        assert_eq!(ledger.length, 2);
+        assert_eq!(ledger.records[0], PREV);
+        assert_eq!(ledger.records[1], MERGED);
+    }
+
+    #[test]
+    fn merge_after_prev() {
+        const RECORD: Record = Record {
+            region: Region::new(Address::new(0x3000), Address::new(0x4000)),
+            access: Access::empty(),
+        };
+
+        const MERGED: Record = Record {
+            region: Region::new(Address::new(0x2000), Address::new(0x4000)),
+            access: Access::empty(),
+        };
+
+        let mut ledger = LEDGER.clone();
+        ledger.add(RECORD).unwrap();
+
+        assert_eq!(ledger.length, 2);
+        assert_eq!(ledger.records[0], MERGED);
+        assert_eq!(ledger.records[1], NEXT);
+    }
+
+    #[test]
+    fn merge_after_next() {
+        const RECORD: Record = Record {
             region: Region::new(Address::new(0x8000), Address::new(0x9000)),
             access: Access::empty(),
         };
@@ -318,10 +423,49 @@ mod tests {
         };
 
         let mut ledger = LEDGER.clone();
-        ledger.insert(INSERT).unwrap();
+        ledger.add(RECORD).unwrap();
 
         assert_eq!(ledger.length, 2);
         assert_eq!(ledger.records[0], PREV);
         assert_eq!(ledger.records[1], MERGED);
+    }
+
+    #[test]
+    fn merge_before() {
+        const RECORD: Record = Record {
+            region: Region::new(Address::new(0x5000), Address::new(0x7000)),
+            access: Access::empty(),
+        };
+
+        const MERGED: Record = Record {
+            region: Region::new(Address::new(0x5000), Address::new(0x8000)),
+            access: Access::empty(),
+        };
+
+        let mut ledger = LEDGER.clone();
+        ledger.add(RECORD).unwrap();
+
+        assert_eq!(ledger.length, 2);
+        assert_eq!(ledger.records[0], PREV);
+        assert_eq!(ledger.records[1], MERGED);
+    }
+
+    #[test]
+    fn merge_both() {
+        const RECORD: Record = Record {
+            region: Region::new(PREV.region.end, NEXT.region.start),
+            access: Access::empty(),
+        };
+
+        const MERGED: Record = Record {
+            region: Region::new(PREV.region.start, NEXT.region.end),
+            access: Access::empty(),
+        };
+
+        let mut ledger = LEDGER.clone();
+        ledger.add(RECORD).unwrap();
+
+        assert_eq!(ledger.length, 1);
+        assert_eq!(ledger.records[0], MERGED);
     }
 }
