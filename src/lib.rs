@@ -5,7 +5,7 @@
 #![deny(missing_docs)]
 #![forbid(unsafe_code)]
 
-use lset::{Contains, Span};
+use lset::Contains;
 use primordial::{Address, Offset, Page};
 
 /// A region of memory.
@@ -258,49 +258,76 @@ impl<const N: usize> Ledger<N> {
         }
     }
 
-    /// Find space for a free region.
-    pub fn find_free(&self, len: Offset<usize, Page>, front: bool) -> Result<Region, Error> {
-        let start = Record {
-            region: Region::new(self.region.start, self.region.start),
-            ..Default::default()
-        };
+    /// Find the smallest address where a region of given size fits.
+    pub fn find_free_front(&self, length: Offset<usize, Page>) -> Option<Address<usize, Page>> {
+        if length.bytes() == 0 || length > (self.region.end - self.region.start) {
+            return None;
+        }
 
-        let end = Record {
-            region: Region::new(self.region.end, self.region.end),
-            ..Default::default()
-        };
+        if self.length == 0 {
+            return Some(self.region.start);
+        }
 
-        // Synthesize a starting window.
-        let first = [start, *self.records().first().unwrap_or(&end)];
+        // Front tail:
+        let first = self.records().first().unwrap().region;
+        if Address::new(length.bytes()) <= first.start {
+            return Some(self.region.start);
+        }
 
-        // Synthesize an ending window.
-        let last = [*self.records().last().unwrap_or(&start), end];
-
-        // Chain everything together.
-        let mut iter = first
-            .windows(2)
-            .chain(self.records().windows(2))
-            .chain(last.windows(2));
-
-        // Iterate through the windows.
-        if front {
-            while let Some([l, r]) = iter.next() {
-                let region = Region::from(Span::new(l.region.end, len));
-                if region > l.region && region < r.region {
-                    return Ok(region);
-                }
-            }
-        } else {
-            let mut iter = iter.rev();
-            while let Some([l, r]) = iter.next() {
-                let region = Region::from(Span::new(r.region.start - len, len));
-                if region > l.region && region < r.region {
-                    return Ok(region);
-                }
+        // Gaps:
+        for (prev, next) in (0..self.length).zip(1..self.length) {
+            let prev = self.records[prev].region;
+            let next = self.records[next].region;
+            let gap = next.start - prev.end;
+            if length <= gap {
+                return Some(prev.end);
             }
         }
 
-        Err(Error::OutOfSpace)
+        // Back tail:
+        let last = self.records().last().unwrap().region;
+        let gap = self.region.end - last.end;
+        if length <= gap {
+            return Some(last.end);
+        }
+
+        None
+    }
+
+    /// Find the largest address where a region of given size fits.
+    pub fn find_free_back(&self, length: Offset<usize, Page>) -> Option<Address<usize, Page>> {
+        if length.bytes() == 0 || length > (self.region.end - self.region.start) {
+            return None;
+        }
+
+        if self.length == 0 {
+            return Some(self.region.end - length);
+        }
+
+        // Back tail:
+        let last = self.records().last().unwrap().region;
+        let gap = self.region.end - last.end;
+        if length <= gap {
+            return Some(self.region.end - length);
+        }
+
+        // Gaps:
+        for (prev, next) in (0..self.length).zip(1..self.length) {
+            let prev = self.records[prev].region;
+            let next = self.records[next].region;
+            let gap = next.start - prev.end;
+            if length <= gap {
+                return Some(next.start - length);
+            }
+        }
+
+        // Front tail:
+        let first = self.records().first().unwrap().region;
+        if self.length == 0 || Address::new(length.bytes()) <= first.start {
+            return Some(first.start - length);
+        }
+
+        None
     }
 
     /// Delete sub-regions.
@@ -363,6 +390,8 @@ impl<const N: usize> Ledger<N> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use core::mem::size_of;
 
     const N: Access = Access::empty();
     const R: Access = Access::READ;
@@ -468,22 +497,36 @@ mod tests {
         assert_eq!(ledger.records(), &records);
     }
 
-    #[test]
-    fn find_free_front() {
-        let region = LEDGER.find_free(Offset::from_items(3), true).unwrap();
-        assert_eq!(Address::new(0x0000)..Address::new(0x3000), region.into());
+    #[rstest::rstest]
+    #[case(0x01, Some(0x00))]
+    #[case(0x02, Some(0x00))]
+    #[case(0x03, Some(0x00))]
+    #[case(0x04, Some(0x06))]
+    #[case(0x05, None)]
+    fn find_free_front(#[case] length: usize, #[case] result: Option<usize>) {
+        let ledger = LEDGER.clone();
+        assert_eq!(ledger.records(), &[PREV, NEXT]);
 
-        let region = LEDGER.find_free(Offset::from_items(4), true).unwrap();
-        assert_eq!(Address::new(0x6000)..Address::new(0xa000), region.into());
+        let length: Offset<usize, Page> = Offset::from_items(length);
+        let result = result.map(|result| Address::new(result * size_of::<Page>()));
+
+        assert_eq!(result, ledger.find_free_front(length));
     }
 
-    #[test]
-    fn find_free_back() {
-        let region = LEDGER.find_free(Offset::from_items(3), false).unwrap();
-        assert_eq!(Address::new(0xd000)..Address::new(0x10000), region.into());
+    #[rstest::rstest]
+    #[case(0x01, Some(0x0F))]
+    #[case(0x02, Some(0x0E))]
+    #[case(0x03, Some(0x0D))]
+    #[case(0x04, Some(0x06))]
+    #[case(0x05, None)]
+    fn find_free_back(#[case] length: usize, #[case] result: Option<usize>) {
+        let ledger = LEDGER.clone();
+        assert_eq!(ledger.records(), &[PREV, NEXT]);
 
-        let region = LEDGER.find_free(Offset::from_items(4), false).unwrap();
-        assert_eq!(Address::new(0x6000)..Address::new(0xa000), region.into());
+        let length: Offset<usize, Page> = Offset::from_items(length);
+        let result = result.map(|result| Address::new(result * size_of::<Page>()));
+
+        assert_eq!(result, ledger.find_free_back(length));
     }
 
     #[test]
