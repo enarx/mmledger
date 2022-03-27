@@ -139,7 +139,9 @@ impl<const N: usize> Ledger<N> {
     }
 
     /// Adds a new record to the ledger, potentially merging with existing records.
-    pub fn add(&mut self, record: Record) -> Result<(), Error> {
+    pub fn map(&mut self, region: Region, access: Access) -> Result<(), Error> {
+        let record = Record { region, access };
+
         // Make sure the record is valid.
         if record.region.start >= record.region.end {
             return Err(Error::InvalidRegion);
@@ -302,7 +304,7 @@ impl<const N: usize> Ledger<N> {
     }
 
     /// Delete sub-regions.
-    pub fn delete(&mut self, region: Region) -> Result<(), Error> {
+    pub fn unmap(&mut self, region: Region) -> Result<(), Error> {
         if region.start >= region.end {
             return Err(Error::InvalidRegion);
         }
@@ -429,7 +431,7 @@ mod tests {
         let mut ledger = LEDGER.clone();
         assert_eq!(ledger.records(), &[PREV, NEXT]);
 
-        ledger.add(record).unwrap();
+        ledger.map(record.region, record.access).unwrap();
         assert_eq!(ledger.records(), &records);
     }
 
@@ -462,7 +464,7 @@ mod tests {
         let mut ledger = LEDGER.clone();
         assert_eq!(ledger.records(), &[PREV, NEXT]);
 
-        ledger.delete(region).unwrap();
+        ledger.unmap(region).unwrap();
         assert_eq!(ledger.records(), &records);
     }
 
