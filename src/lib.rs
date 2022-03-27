@@ -317,6 +317,12 @@ impl<const N: usize> Ledger<N> {
             let record_start = self.records[index].region.start;
             let record_end = self.records[index].region.end;
 
+            if region.end < record_start || region.start > record_end {
+                // Skip:
+                index += 1;
+                continue;
+            }
+
             if region.start <= record_start && region.end >= record_end {
                 self.remove(index);
                 // Jump without `index += 1` so that a left-shifted record will
