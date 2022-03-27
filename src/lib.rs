@@ -5,7 +5,7 @@
 #![deny(missing_docs)]
 #![forbid(unsafe_code)]
 
-use lset::Span;
+use lset::{Contains, Span};
 use primordial::{Address, Offset, Page};
 
 /// A region of memory.
@@ -59,8 +59,8 @@ impl Record {
         access: Access::empty(),
     };
 
-    fn is_between(&self, lhs: &Record, rhs: &Record) -> bool {
-        lhs.region < self.region && self.region < rhs.region
+    fn is_mergable(&self, other: &Self) -> bool {
+        self.access == other.access && self.region.end == other.region.start
     }
 }
 
@@ -146,74 +146,114 @@ impl<const N: usize> Ledger<N> {
         }
 
         // Make sure the record fits in our adress space.
-        if record.region.start < self.region.start || record.region.end > self.region.end {
+        if !self.region.contains(&record.region) {
             return Err(Error::Overflow);
         }
 
-        // Loop over the records looking for merges.
-        for i in 0..self.length + 1 {
-            let (lhs, rhs) = self.records_mut().split_at_mut(i);
-            let mut prev = lhs.last_mut();
-            let mut this = rhs.first_mut();
-            let mut merges = (false, false);
+        // Find the start of the records that might interact with the new record.
+        let base = self
+            .records()
+            .partition_point(|r| r.region.end < record.region.start);
 
-            // Check for overlap.
-            if let Some(this) = this.as_mut() {
-                if this.region.intersection(record.region).is_some() {
-                    return Err(Error::Overlap);
-                }
+        // Identify leading records that may interact with the new record.
+        let head = self.records()[base..]
+            .iter()
+            .take_while(|r| !record.region.contains(&r.region))
+            .take_while(|r| r.region.start <= record.region.end)
+            .count();
+
+        // Drop all records fully contained by the new record.
+        let drop = self.records_mut()[base + head..]
+            .iter_mut()
+            .take_while(|r| r.region != record.region)
+            .take_while(|r| record.region.contains(&r.region))
+            .map(|r| *r = Record::EMPTY)
+            .count();
+        self.records_mut()[base + head..].rotate_left(drop);
+        self.length -= drop;
+
+        // Identify tailing records that may interact with the new record.
+        let tail = self.records()[base + head..]
+            .iter()
+            .take_while(|r| r.region.start <= record.region.end)
+            .count();
+
+        // Handle all overlaps.
+        for i in base..base + head + tail {
+            let r = &mut self.records[i];
+
+            // If the regions match, just update permissions.
+            if r.region == record.region {
+                r.access = record.access;
+                return Ok(());
             }
 
-            // Potentially merge after `prev`.
-            if let Some(prev) = prev.as_mut() {
-                if prev.access == record.access && prev.region.end == record.region.start {
-                    prev.region.end = record.region.end;
-                    merges.0 = true;
+            // If the new record is in the middle of an old record with space
+            // on both sides, then we have to split the old record.
+            if r.region.start < record.region.start && record.region.end < r.region.end {
+                if r.access != record.access {
+                    if self.length + 2 > N {
+                        return Err(Error::OutOfCapacity);
+                    }
+
+                    let new = Region::new(record.region.end, r.region.end);
+                    let new = r.access.record(new);
+                    r.region.end = record.region.start;
+
+                    self.length += 2;
+                    self.records_mut()[i + 1..].rotate_right(2);
+                    self.records[i + 1] = record;
+                    self.records[i + 2] = new;
                 }
+
+                return Ok(());
             }
 
-            // Potentially merge before `this`.
-            if let Some(this) = this.as_mut() {
-                if this.access == record.access && this.region.start == record.region.end {
-                    this.region.start = record.region.start;
-                    merges.1 = true;
-                }
-            }
-
-            match (merges, (prev, this)) {
-                // If there is a gap between two records, insert.
-                ((false, false), (Some(prev), Some(this))) if record.is_between(prev, this) => {
-                    return self.insert(i, record);
-                }
-
-                // If we are at the start, insert.
-                ((false, false), (None, Some(this))) if record.region < this.region => {
-                    return self.insert(i, record);
-                }
-
-                // If we are at the end, insert.
-                ((false, false), (Some(prev), None)) if record.region > prev.region => {
-                    return self.insert(i, record);
-                }
-
-                // If this is the first record, insert.
-                ((false, false), (None, None)) => return self.insert(i, record),
-
-                // We merged in both directions. Merge again.
-                ((true, true), (Some(prev), Some(this))) => {
-                    this.region.start = prev.region.start;
-                    self.remove(i - 1);
-                    return Ok(());
-                }
-
-                ((true, true), ..) => unreachable!(),
-                ((true, false), ..) => return Ok(()),
-                ((false, true), ..) => return Ok(()),
-                ((false, false), ..) => (),
+            // Truncate overlapping regions.
+            if r.region.contains(&record.region.start) {
+                r.region.end = record.region.start;
+            } else if r.region.contains(&record.region.end) {
+                r.region.start = record.region.end;
             }
         }
 
-        unreachable!()
+        // Prepare for merge attempts.
+        let view = &self.records()[base..base + head + tail];
+        let indx = base + view.partition_point(|r| r.region.end <= record.region.start);
+        let (prev, next) = self.records_mut().split_at_mut(indx);
+        let (mut prev, mut next) = (prev.last_mut(), next.first_mut());
+
+        // Potentially merge after `prev`.
+        let merged_lhs = match prev.as_mut() {
+            Some(prev) if prev.is_mergable(&record) => {
+                prev.region.end = record.region.end;
+                true
+            }
+            _ => false,
+        };
+
+        // Potentially merge before `next`.
+        let merged_rhs = match next.as_mut() {
+            Some(next) if record.is_mergable(next) => {
+                next.region.start = record.region.start;
+                true
+            }
+            _ => false,
+        };
+
+        match ((merged_lhs, merged_rhs), (prev, next)) {
+            // We merged in both directions. Merge again.
+            ((true, true), (Some(prev), Some(this))) => {
+                this.region.start = prev.region.start;
+                self.remove(indx - 1);
+                Ok(())
+            }
+
+            ((false, false), ..) => self.insert(indx, record),
+            ((true, true), ..) => unreachable!(),
+            ((true, false), ..) => Ok(()),
+            ((false, true), ..) => Ok(()),
+        }
     }
 
     /// Find space for a free region.
@@ -316,276 +356,132 @@ impl<const N: usize> Ledger<N> {
 mod tests {
     use super::*;
 
-    use core::mem::{align_of, size_of};
+    const N: Access = Access::empty();
+    const R: Access = Access::READ;
 
     const PREV: Record = Record {
-        region: Region::new(Address::new(0x2000), Address::new(0x3000)),
+        region: Region::new(Address::new(0x3000), Address::new(0x6000)),
         access: Access::empty(),
     };
 
     const NEXT: Record = Record {
-        region: Region::new(Address::new(0x7000), Address::new(0x8000)),
+        region: Region::new(Address::new(0xa000), Address::new(0xd000)),
         access: Access::empty(),
     };
 
-    const LEDGER: Ledger<4> = Ledger {
-        records: [PREV, NEXT, Record::EMPTY, Record::EMPTY],
-        region: Region::new(Address::new(0x0000), Address::new(0xa000)),
+    const LEDGER: Ledger<5> = Ledger {
+        records: [PREV, NEXT, Record::EMPTY, Record::EMPTY, Record::EMPTY],
+        region: Region::new(Address::new(0x0000), Address::new(0x10000)),
         length: 2,
     };
 
-    #[test]
-    fn record_size_align() {
-        assert_eq!(size_of::<Record>(), size_of::<usize>() * 4);
-        assert_eq!(align_of::<Record>(), size_of::<Record>());
-    }
-
-    #[test]
-    fn insert_start() {
-        const RECORD: Record = Record {
-            region: Region::new(Address::new(0x0000), Address::new(0x1000)),
-            access: Access::empty(),
+    #[rstest::rstest]
+    #[case((0x0, 0x1, N), &[(0x0, 0x1, N), (0x3, 0x6, N), (0xa, 0xd, N)])] // normal insert
+    #[case((0x7, 0x8, N), &[(0x3, 0x6, N), (0x7, 0x8, N), (0xa, 0xd, N)])] // normal insert
+    #[case((0xe, 0xf, N), &[(0x3, 0x6, N), (0xa, 0xd, N), (0xe, 0xf, N)])] // normal insert
+    #[case((0x2, 0x3, N), &[(0x2, 0x6, N), (0xa, 0xd, N)])] // merge before
+    #[case((0x9, 0xa, N), &[(0x3, 0x6, N), (0x9, 0xd, N)])] // merge before
+    #[case((0x2, 0x4, N), &[(0x2, 0x6, N), (0xa, 0xd, N)])] // merge before overlap
+    #[case((0x9, 0xb, N), &[(0x3, 0x6, N), (0x9, 0xd, N)])] // merge before overlap
+    #[case((0x6, 0x7, N), &[(0x3, 0x7, N), (0xa, 0xd, N)])] // merge after
+    #[case((0xd, 0xe, N), &[(0x3, 0x6, N), (0xa, 0xe, N)])] // merge after
+    #[case((0x5, 0x7, N), &[(0x3, 0x7, N), (0xa, 0xd, N)])] // merge after overlap
+    #[case((0xc, 0xe, N), &[(0x3, 0x6, N), (0xa, 0xe, N)])] // merge after overlap
+    #[case((0x2, 0x3, R), &[(0x2, 0x3, R), (0x3, 0x6, N), (0xa, 0xd, N)])] // no merge before
+    #[case((0x9, 0xa, R), &[(0x3, 0x6, N), (0x9, 0xa, R), (0xa, 0xd, N)])] // no merge before
+    #[case((0x6, 0x7, R), &[(0x3, 0x6, N), (0x6, 0x7, R), (0xa, 0xd, N)])] // no merge after
+    #[case((0xd, 0xe, R), &[(0x3, 0x6, N), (0xa, 0xd, N), (0xd, 0xe, R)])] // no merge after
+    #[case((0x3, 0x6, N), &[(0x3, 0x6, N), (0xa, 0xd, N)])] // no update
+    #[case((0xa, 0xd, N), &[(0x3, 0x6, N), (0xa, 0xd, N)])] // no update
+    #[case((0x3, 0x6, R), &[(0x3, 0x6, R), (0xa, 0xd, N)])] // update
+    #[case((0xa, 0xd, R), &[(0x3, 0x6, N), (0xa, 0xd, R)])] // update
+    #[case((0x0, 0xf, N), &[(0x0, 0xf, N)])] // replace
+    #[case((0x0, 0xf, R), &[(0x0, 0xf, R)])] // replace
+    #[case((0x4, 0x5, N), &[(0x3, 0x6, N), (0xa, 0xd, N)])] // no split
+    #[case((0xb, 0xc, N), &[(0x3, 0x6, N), (0xa, 0xd, N)])] // no split
+    #[case((0x4, 0x5, R), &[(0x3, 0x4, N), (0x4, 0x5, R), (0x5, 0x6, N), (0xa, 0xd, N)])] // split
+    #[case((0xb, 0xc, R), &[(0x3, 0x6, N), (0xa, 0xb, N), (0xb, 0xc, R), (0xc, 0xd, N)])] // split
+    #[case((0x2, 0x4, R), &[(0x2, 0x4, R), (0x4, 0x6, N), (0xa, 0xd, N)])] // overlap before
+    #[case((0x9, 0xb, R), &[(0x3, 0x6, N), (0x9, 0xb, R), (0xb, 0xd, N)])] // overlap before
+    #[case((0x5, 0x7, R), &[(0x3, 0x5, N), (0x5, 0x7, R), (0xa, 0xd, N)])] // overlap after
+    #[case((0xc, 0xe, R), &[(0x3, 0x6, N), (0xa, 0xc, N), (0xc, 0xe, R)])] // overlap after
+    fn map(#[case] record: (usize, usize, Access), #[case] records: &[(usize, usize, Access)]) {
+        let record = Record {
+            region: Region::new(Address::new(record.0 << 12), Address::new(record.1 << 12)),
+            access: record.2,
         };
+
+        let records = records
+            .iter()
+            .cloned()
+            .map(|record| Record {
+                region: Region::new(Address::new(record.0 << 12), Address::new(record.1 << 12)),
+                access: record.2,
+            })
+            .collect::<Vec<_>>();
 
         let mut ledger = LEDGER.clone();
         assert_eq!(ledger.records(), &[PREV, NEXT]);
 
-        ledger.add(RECORD).unwrap();
-        assert_eq!(ledger.records(), &[RECORD, PREV, NEXT]);
+        ledger.add(record).unwrap();
+        assert_eq!(ledger.records(), &records);
     }
 
-    #[test]
-    fn insert_middle() {
-        const RECORD: Record = Record {
-            region: Region::new(Address::new(0x5000), Address::new(0x6000)),
-            access: Access::empty(),
-        };
+    #[rstest::rstest]
+    #[case((0x1, 0xf), &[])] // clear
+    #[case((0x0, 0x1), &[(0x3, 0x6, N), (0xa, 0xd, N)])] // noop
+    #[case((0x7, 0x8), &[(0x3, 0x6, N), (0xa, 0xd, N)])] // noop
+    #[case((0xe, 0xf), &[(0x3, 0x6, N), (0xa, 0xd, N)])] // noop
+    #[case((0x3, 0x6), &[(0xa, 0xd, N)])] // remove
+    #[case((0xa, 0xd), &[(0x3, 0x6, N)])] // remove
+    #[case((0x2, 0x7), &[(0xa, 0xd, N)])] // remove oversized
+    #[case((0x9, 0xe), &[(0x3, 0x6, N)])] // remove oversized
+    #[case((0x2, 0x4), &[(0x4, 0x6, N), (0xa, 0xd, N)])] // overlap before
+    #[case((0x9, 0xb), &[(0x3, 0x6, N), (0xb, 0xd, N)])] // overlap before
+    #[case((0x5, 0x7), &[(0x3, 0x5, N), (0xa, 0xd, N)])] // overlap after
+    #[case((0xc, 0xe), &[(0x3, 0x6, N), (0xa, 0xc, N)])] // overlap after
+    #[case((0x4, 0x5), &[(0x3, 0x4, N), (0x5, 0x6, N), (0xa, 0xd, N)])] // split
+    #[case((0xb, 0xc), &[(0x3, 0x6, N), (0xa, 0xb, N), (0xc, 0xd, N)])] // split
+    fn unmap(#[case] record: (usize, usize), #[case] records: &[(usize, usize, Access)]) {
+        let region = Region::new(Address::new(record.0 << 12), Address::new(record.1 << 12));
+        let records = records
+            .iter()
+            .cloned()
+            .map(|record| Record {
+                region: Region::new(Address::new(record.0 << 12), Address::new(record.1 << 12)),
+                access: record.2,
+            })
+            .collect::<Vec<_>>();
 
         let mut ledger = LEDGER.clone();
         assert_eq!(ledger.records(), &[PREV, NEXT]);
 
-        ledger.add(RECORD).unwrap();
-        assert_eq!(ledger.records(), &[PREV, RECORD, NEXT]);
-    }
-
-    #[test]
-    fn insert_end() {
-        const RECORD: Record = Record {
-            region: Region::new(Address::new(0x9000), Address::new(0xa000)),
-            access: Access::empty(),
-        };
-
-        let mut ledger = LEDGER.clone();
-        assert_eq!(ledger.records(), &[PREV, NEXT]);
-
-        ledger.add(RECORD).unwrap();
-        assert_eq!(ledger.records(), &[PREV, NEXT, RECORD]);
+        ledger.delete(region).unwrap();
+        assert_eq!(ledger.records(), &records);
     }
 
     #[test]
     fn find_free_front() {
-        let region = LEDGER.find_free(Offset::from_items(2), true).unwrap();
-        assert_eq!(Address::new(0x0000)..Address::new(0x2000), region.into());
-
         let region = LEDGER.find_free(Offset::from_items(3), true).unwrap();
-        assert_eq!(Address::new(0x3000)..Address::new(0x6000), region.into());
+        assert_eq!(Address::new(0x0000)..Address::new(0x3000), region.into());
+
+        let region = LEDGER.find_free(Offset::from_items(4), true).unwrap();
+        assert_eq!(Address::new(0x6000)..Address::new(0xa000), region.into());
     }
 
     #[test]
     fn find_free_back() {
-        let region = LEDGER.find_free(Offset::from_items(2), false).unwrap();
-        assert_eq!(Address::new(0x8000)..Address::new(0xa000), region.into());
-
         let region = LEDGER.find_free(Offset::from_items(3), false).unwrap();
-        assert_eq!(Address::new(0x4000)..Address::new(0x7000), region.into());
+        assert_eq!(Address::new(0xd000)..Address::new(0x10000), region.into());
+
+        let region = LEDGER.find_free(Offset::from_items(4), false).unwrap();
+        assert_eq!(Address::new(0x6000)..Address::new(0xa000), region.into());
     }
 
     #[test]
-    fn merge_before_prev() {
-        const RECORD: Record = Record {
-            region: Region::new(Address::new(0x1000), Address::new(0x2000)),
-            access: Access::empty(),
-        };
-
-        const MERGED: Record = Record {
-            region: Region::new(Address::new(0x1000), Address::new(0x3000)),
-            access: Access::empty(),
-        };
-
-        let mut ledger = LEDGER.clone();
-        ledger.add(RECORD).unwrap();
-
-        assert_eq!(ledger.length, 2);
-        assert_eq!(ledger.records[0], MERGED);
-        assert_eq!(ledger.records[1], NEXT);
-    }
-
-    #[test]
-    fn merge_before_next() {
-        const RECORD: Record = Record {
-            region: Region::new(Address::new(0x6000), Address::new(0x7000)),
-            access: Access::empty(),
-        };
-
-        const MERGED: Record = Record {
-            region: Region::new(Address::new(0x6000), Address::new(0x8000)),
-            access: Access::empty(),
-        };
-
-        let mut ledger = LEDGER.clone();
-        ledger.add(RECORD).unwrap();
-
-        assert_eq!(ledger.length, 2);
-        assert_eq!(ledger.records[0], PREV);
-        assert_eq!(ledger.records[1], MERGED);
-    }
-
-    #[test]
-    fn merge_after_prev() {
-        const RECORD: Record = Record {
-            region: Region::new(Address::new(0x3000), Address::new(0x4000)),
-            access: Access::empty(),
-        };
-
-        const MERGED: Record = Record {
-            region: Region::new(Address::new(0x2000), Address::new(0x4000)),
-            access: Access::empty(),
-        };
-
-        let mut ledger = LEDGER.clone();
-        ledger.add(RECORD).unwrap();
-
-        assert_eq!(ledger.length, 2);
-        assert_eq!(ledger.records[0], MERGED);
-        assert_eq!(ledger.records[1], NEXT);
-    }
-
-    #[test]
-    fn merge_after_next() {
-        const RECORD: Record = Record {
-            region: Region::new(Address::new(0x8000), Address::new(0x9000)),
-            access: Access::empty(),
-        };
-
-        const MERGED: Record = Record {
-            region: Region::new(Address::new(0x7000), Address::new(0x9000)),
-            access: Access::empty(),
-        };
-
-        let mut ledger = LEDGER.clone();
-        ledger.add(RECORD).unwrap();
-
-        assert_eq!(ledger.length, 2);
-        assert_eq!(ledger.records[0], PREV);
-        assert_eq!(ledger.records[1], MERGED);
-    }
-
-    #[test]
-    fn merge_before() {
-        const RECORD: Record = Record {
-            region: Region::new(Address::new(0x5000), Address::new(0x7000)),
-            access: Access::empty(),
-        };
-
-        const MERGED: Record = Record {
-            region: Region::new(Address::new(0x5000), Address::new(0x8000)),
-            access: Access::empty(),
-        };
-
-        let mut ledger = LEDGER.clone();
-        ledger.add(RECORD).unwrap();
-
-        assert_eq!(ledger.length, 2);
-        assert_eq!(ledger.records[0], PREV);
-        assert_eq!(ledger.records[1], MERGED);
-    }
-
-    #[test]
-    fn merge_both() {
-        const RECORD: Record = Record {
-            region: Region::new(PREV.region.end, NEXT.region.start),
-            access: Access::empty(),
-        };
-
-        const MERGED: Record = Record {
-            region: Region::new(PREV.region.start, NEXT.region.end),
-            access: Access::empty(),
-        };
-
-        let mut ledger = LEDGER.clone();
-        ledger.add(RECORD).unwrap();
-
-        assert_eq!(ledger.length, 1);
-        assert_eq!(ledger.records[0], MERGED);
-    }
-
-    #[test]
-    fn delete_after() {
-        const RECORD: Record = Record {
-            region: Region::new(PREV.region.end, NEXT.region.start),
-            access: Access::empty(),
-        };
-
-        const MERGED: Record = Record {
-            region: Region::new(PREV.region.start, NEXT.region.start),
-            access: Access::empty(),
-        };
-
-        let mut ledger = LEDGER.clone();
-        ledger.add(RECORD).unwrap();
-        ledger.delete(NEXT.region).unwrap();
-
-        assert_eq!(ledger.length, 1);
-        assert_eq!(ledger.records[0], MERGED);
-    }
-
-    #[test]
-    fn delete_all() {
-        const RECORD: Record = Record {
-            region: Region::new(LEDGER.region.start, LEDGER.region.end),
-            access: Access::empty(),
-        };
-
-        let mut ledger = LEDGER.clone();
-        assert_eq!(ledger.length, 2);
-
-        ledger.delete(RECORD.region).unwrap();
-        assert_eq!(ledger.length, 0);
-    }
-
-    #[test]
-    fn delete_before() {
-        const RECORD: Record = Record {
-            region: Region::new(PREV.region.end, NEXT.region.start),
-            access: Access::empty(),
-        };
-
-        const MERGED: Record = Record {
-            region: Region::new(PREV.region.end, NEXT.region.end),
-            access: Access::empty(),
-        };
-
-        let mut ledger = LEDGER.clone();
-        ledger.add(RECORD).unwrap();
-        ledger.delete(PREV.region).unwrap();
-
-        assert_eq!(ledger.length, 1);
-        assert_eq!(ledger.records[0], MERGED);
-    }
-
-    #[test]
-    fn delete_split() {
-        const RECORD: Record = Record {
-            region: Region::new(PREV.region.end, NEXT.region.start),
-            access: Access::empty(),
-        };
-
-        let mut ledger = LEDGER.clone();
-        ledger.add(RECORD).unwrap();
-        ledger.delete(RECORD.region).unwrap();
-
-        assert_eq!(ledger.length, 2);
-        assert_eq!(ledger.records[0], PREV);
-        assert_eq!(ledger.records[1], NEXT);
+    fn record_size_align() {
+        use core::mem::{align_of, size_of};
+        assert_eq!(size_of::<Record>(), size_of::<usize>() * 4);
+        assert_eq!(align_of::<Record>(), size_of::<Record>());
     }
 }

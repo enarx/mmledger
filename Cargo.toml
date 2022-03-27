@@ -16,3 +16,6 @@ include = [
 bitflags = "1.0.4"
 lset = { git = "https://github.com/enarx/lset", branch = "main" }
 primordial = { git = "https://github.com/enarx/primordial", branch = "main" }
+
+[dev-dependencies]
+rstest = "0.12.0"
