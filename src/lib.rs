@@ -256,6 +256,17 @@ impl<const N: usize> Ledger<N> {
         }
     }
 
+    /// Check if a region is still unallocated.
+    pub fn is_allocated(&self, region: Region) -> bool {
+        let index = self.records[..self.length]
+            .binary_search_by(|record| record.region.start.cmp(&region.start))
+            .unwrap_or_else(|record| record);
+        let intersecting = |record: Record| record.region.intersection(region).is_some();
+
+        intersecting(self.records[index])
+            || (index + 1 < self.length && intersecting(self.records[index + 1]))
+    }
+
     /// Find space for a free region.
     pub fn find_free(&self, len: Offset<usize, Page>, front: bool) -> Result<Region, Error> {
         let start = Record {
@@ -483,5 +494,28 @@ mod tests {
         use core::mem::{align_of, size_of};
         assert_eq!(size_of::<Record>(), size_of::<usize>() * 4);
         assert_eq!(align_of::<Record>(), size_of::<Record>());
+    }
+
+    #[test]
+    fn is_allocated_front() {
+        let ledger = LEDGER.clone();
+        assert!(ledger.is_allocated(PREV.region));
+    }
+
+    #[test]
+    fn is_allocated_back() {
+        let ledger = LEDGER.clone();
+        assert!(ledger.is_allocated(NEXT.region));
+    }
+
+    #[test]
+    fn is_not_allocated() {
+        const RECORD: Record = Record {
+            region: Region::new(PREV.region.end, NEXT.region.start),
+            access: Access::empty(),
+        };
+
+        let ledger = LEDGER.clone();
+        assert_eq!(ledger.is_allocated(RECORD.region), false);
     }
 }
