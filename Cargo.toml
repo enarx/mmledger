@@ -14,8 +14,8 @@ include = [
 
 [dependencies]
 bitflags = "1.0.4"
-lset = { git = "https://github.com/enarx/lset", branch = "main" }
-primordial = { git = "https://github.com/enarx/primordial", branch = "main" }
+lset = { git = "https://github.com/enarx/lset", rev = "5c2feed24d85442725f55d812315854e1b29595d"  }
+primordial = { git = "https://github.com/enarx/primordial", rev = "b606b9e472e2238384b003f12fdada077e04d2fe" }
 
 [dev-dependencies]
 rstest = "0.12.0"
