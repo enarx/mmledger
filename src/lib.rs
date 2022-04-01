@@ -5,6 +5,8 @@
 #![deny(missing_docs)]
 #![forbid(unsafe_code)]
 
+use core::fmt;
+
 use lset::Contains;
 use primordial::{Address, Offset, Page};
 
@@ -34,6 +36,30 @@ impl Access {
             region,
             access: self,
         }
+    }
+}
+
+impl fmt::Display for Access {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(
+            f,
+            "{}{}{}",
+            if self.contains(Access::READ) {
+                'r'
+            } else {
+                '-'
+            },
+            if self.contains(Access::WRITE) {
+                'w'
+            } else {
+                '-'
+            },
+            if self.contains(Access::EXECUTE) {
+                'x'
+            } else {
+                '-'
+            }
+        )
     }
 }
 
@@ -391,64 +417,132 @@ impl<const N: usize> Ledger<N> {
 mod tests {
     use super::*;
 
-    use core::mem::size_of;
+    use core::cmp::max;
 
     const N: Access = Access::empty();
     const R: Access = Access::READ;
 
-    const PREV: Record = Record {
-        region: Region::new(Address::new(0x3000), Address::new(0x6000)),
+    const FULL: Record = Record {
+        region: Region::new(Address::new(0), Address::new(0x10000)),
         access: Access::empty(),
     };
 
-    const NEXT: Record = Record {
-        region: Region::new(Address::new(0xa000), Address::new(0xd000)),
-        access: Access::empty(),
-    };
-
-    const LEDGER: Ledger<5> = Ledger {
-        records: [PREV, NEXT, Record::EMPTY, Record::EMPTY, Record::EMPTY],
+    const EMPTY_LEDGER: Ledger<5> = Ledger {
+        records: [
+            Record::EMPTY,
+            Record::EMPTY,
+            Record::EMPTY,
+            Record::EMPTY,
+            Record::EMPTY,
+        ],
         region: Region::new(Address::new(0x0000), Address::new(0x10000)),
-        length: 2,
+        length: 0,
     };
 
-    #[rstest::rstest]
-    #[case((0x0, 0x1, N), &[(0x0, 0x1, N), (0x3, 0x6, N), (0xa, 0xd, N)])] // normal insert
-    #[case((0x7, 0x8, N), &[(0x3, 0x6, N), (0x7, 0x8, N), (0xa, 0xd, N)])] // normal insert
-    #[case((0xe, 0xf, N), &[(0x3, 0x6, N), (0xa, 0xd, N), (0xe, 0xf, N)])] // normal insert
-    #[case((0x2, 0x3, N), &[(0x2, 0x6, N), (0xa, 0xd, N)])] // merge before
-    #[case((0x9, 0xa, N), &[(0x3, 0x6, N), (0x9, 0xd, N)])] // merge before
-    #[case((0x2, 0x4, N), &[(0x2, 0x6, N), (0xa, 0xd, N)])] // merge before overlap
-    #[case((0x9, 0xb, N), &[(0x3, 0x6, N), (0x9, 0xd, N)])] // merge before overlap
-    #[case((0x6, 0x7, N), &[(0x3, 0x7, N), (0xa, 0xd, N)])] // merge after
-    #[case((0xd, 0xe, N), &[(0x3, 0x6, N), (0xa, 0xe, N)])] // merge after
-    #[case((0x5, 0x7, N), &[(0x3, 0x7, N), (0xa, 0xd, N)])] // merge after overlap
-    #[case((0xc, 0xe, N), &[(0x3, 0x6, N), (0xa, 0xe, N)])] // merge after overlap
-    #[case((0x2, 0x3, R), &[(0x2, 0x3, R), (0x3, 0x6, N), (0xa, 0xd, N)])] // no merge before
-    #[case((0x9, 0xa, R), &[(0x3, 0x6, N), (0x9, 0xa, R), (0xa, 0xd, N)])] // no merge before
-    #[case((0x6, 0x7, R), &[(0x3, 0x6, N), (0x6, 0x7, R), (0xa, 0xd, N)])] // no merge after
-    #[case((0xd, 0xe, R), &[(0x3, 0x6, N), (0xa, 0xd, N), (0xd, 0xe, R)])] // no merge after
-    #[case((0x3, 0x6, N), &[(0x3, 0x6, N), (0xa, 0xd, N)])] // no update
-    #[case((0xa, 0xd, N), &[(0x3, 0x6, N), (0xa, 0xd, N)])] // no update
-    #[case((0x3, 0x6, R), &[(0x3, 0x6, R), (0xa, 0xd, N)])] // update
-    #[case((0xa, 0xd, R), &[(0x3, 0x6, N), (0xa, 0xd, R)])] // update
-    #[case((0x0, 0xf, N), &[(0x0, 0xf, N)])] // replace
-    #[case((0x0, 0xf, R), &[(0x0, 0xf, R)])] // replace
-    #[case((0x4, 0x5, N), &[(0x3, 0x6, N), (0xa, 0xd, N)])] // no split
-    #[case((0xb, 0xc, N), &[(0x3, 0x6, N), (0xa, 0xd, N)])] // no split
-    #[case((0x4, 0x5, R), &[(0x3, 0x4, N), (0x4, 0x5, R), (0x5, 0x6, N), (0xa, 0xd, N)])] // split
-    #[case((0xb, 0xc, R), &[(0x3, 0x6, N), (0xa, 0xb, N), (0xb, 0xc, R), (0xc, 0xd, N)])] // split
-    #[case((0x2, 0x4, R), &[(0x2, 0x4, R), (0x4, 0x6, N), (0xa, 0xd, N)])] // overlap before
-    #[case((0x9, 0xb, R), &[(0x3, 0x6, N), (0x9, 0xb, R), (0xb, 0xd, N)])] // overlap before
-    #[case((0x5, 0x7, R), &[(0x3, 0x5, N), (0x5, 0x7, R), (0xa, 0xd, N)])] // overlap after
-    #[case((0xc, 0xe, R), &[(0x3, 0x6, N), (0xa, 0xc, N), (0xc, 0xe, R)])] // overlap after
-    fn map(#[case] record: (usize, usize, Access), #[case] records: &[(usize, usize, Access)]) {
-        let record = Record {
-            region: Region::new(Address::new(record.0 << 12), Address::new(record.1 << 12)),
-            access: record.2,
-        };
+    const FULL_LEDGER: Ledger<5> = Ledger {
+        records: [
+            FULL,
+            Record::EMPTY,
+            Record::EMPTY,
+            Record::EMPTY,
+            Record::EMPTY,
+        ],
+        region: Region::new(Address::new(0x0000), Address::new(0x10000)),
+        length: 1,
+    };
 
-        let records = records
+    fn trace_records(records: &[Record]) {
+        for record in records {
+            println!(
+                "[{:>#08x}, {:>#08x} {}]",
+                record.region.start, record.region.end, record.access
+            );
+        }
+    }
+
+    fn trace_regions(regions: &[Region]) {
+        for region in regions {
+            println!("[{:>#08x}, {:>#08x}]", region.start, region.end);
+        }
+    }
+
+    fn trace_assert_records_eq(a: &[Record], b: &[Record]) {
+        let max = max(a.len(), b.len());
+        let mut equal = true;
+
+        for i in 0..max {
+            if i >= a.len() {
+                equal = false;
+                println!(
+                    "[?, ?, ?] == [{:>#08x}, {:>#08x}, {}]",
+                    b[i].region.start, b[i].region.end, b[i].access
+                );
+            } else if i >= b.len() {
+                equal = false;
+                println!(
+                    "[{:>#08x}, {:>#08x}, {}] == [?, ?, ?]",
+                    a[i].region.start, a[i].region.end, a[i].access
+                );
+            } else if a[i] == b[i] {
+                println!(
+                    "[{:>#08x}, {:>#08x}, {}] == [{:>#08x}, {:>#08x}, {}]",
+                    a[i].region.start,
+                    a[i].region.end,
+                    a[i].access,
+                    b[i].region.start,
+                    b[i].region.end,
+                    b[i].access
+                );
+            } else {
+                equal = false;
+                println!(
+                    "[{:>#08x}, {:>#08x}, {}] != [{:>#08x}, {:>#08x}, {}]",
+                    a[i].region.start,
+                    a[i].region.end,
+                    b[i].access,
+                    b[i].region.start,
+                    b[i].region.end,
+                    b[i].access
+                );
+            }
+        }
+
+        assert!(equal);
+    }
+
+    #[rstest::rstest]
+    #[case(&[(0x3, 0x6, N), (0xa, 0xd, N)], &[(0x3, 0x6, N), (0xa, 0xd, N)])] // normal insert
+    #[case(&[(0x3, 0x6, N), (0xa, 0xd, N), (0x0, 0x1, N)], &[(0x0, 0x1, N), (0x3, 0x6, N), (0xa, 0xd, N)])] // normal insert
+    #[case(&[(0x3, 0x6, N), (0xa, 0xd, N), (0x7, 0x8, N)], &[(0x3, 0x6, N), (0x7, 0x8, N), (0xa, 0xd, N)])] // normal insert
+    #[case(&[(0x3, 0x6, N), (0xa, 0xd, N), (0xe, 0xf, N)], &[(0x3, 0x6, N), (0xa, 0xd, N), (0xe, 0xf, N)])] // normal insert
+    #[case(&[(0x3, 0x6, N), (0xa, 0xd, N), (0x2, 0x3, N)], &[(0x2, 0x6, N), (0xa, 0xd, N)])] // merge before
+    #[case(&[(0x3, 0x6, N), (0xa, 0xd, N), (0x9, 0xa, N)], &[(0x3, 0x6, N), (0x9, 0xd, N)])] // merge before
+    #[case(&[(0x3, 0x6, N), (0xa, 0xd, N), (0x2, 0x4, N)], &[(0x2, 0x6, N), (0xa, 0xd, N)])] // merge before overlap
+    #[case(&[(0x3, 0x6, N), (0xa, 0xd, N), (0x9, 0xb, N)], &[(0x3, 0x6, N), (0x9, 0xd, N)])] // merge before overlap
+    #[case(&[(0x3, 0x6, N), (0xa, 0xd, N), (0x6, 0x7, N)], &[(0x3, 0x7, N), (0xa, 0xd, N)])] // merge after
+    #[case(&[(0x3, 0x6, N), (0xa, 0xd, N), (0xd, 0xe, N)], &[(0x3, 0x6, N), (0xa, 0xe, N)])] // merge after
+    #[case(&[(0x3, 0x6, N), (0xa, 0xd, N), (0x5, 0x7, N)], &[(0x3, 0x7, N), (0xa, 0xd, N)])] // merge after overlap
+    #[case(&[(0x3, 0x6, N), (0xa, 0xd, N), (0xc, 0xe, N)], &[(0x3, 0x6, N), (0xa, 0xe, N)])] // merge after overlap
+    #[case(&[(0x3, 0x6, N), (0xa, 0xd, N), (0x2, 0x3, R)], &[(0x2, 0x3, R), (0x3, 0x6, N), (0xa, 0xd, N)])] // no merge before
+    #[case(&[(0x3, 0x6, N), (0xa, 0xd, N), (0x9, 0xa, R)], &[(0x3, 0x6, N), (0x9, 0xa, R), (0xa, 0xd, N)])] // no merge before
+    #[case(&[(0x3, 0x6, N), (0xa, 0xd, N), (0x6, 0x7, R)], &[(0x3, 0x6, N), (0x6, 0x7, R), (0xa, 0xd, N)])] // no merge after
+    #[case(&[(0x3, 0x6, N), (0xa, 0xd, N), (0xd, 0xe, R)], &[(0x3, 0x6, N), (0xa, 0xd, N), (0xd, 0xe, R)])] // no merge after
+    #[case(&[(0x3, 0x6, N), (0xa, 0xd, N), (0x3, 0x6, N)], &[(0x3, 0x6, N), (0xa, 0xd, N)])] // no update
+    #[case(&[(0x3, 0x6, N), (0xa, 0xd, N), (0xa, 0xd, N)], &[(0x3, 0x6, N), (0xa, 0xd, N)])] // no update
+    #[case(&[(0x3, 0x6, N), (0xa, 0xd, N), (0x3, 0x6, R)], &[(0x3, 0x6, R), (0xa, 0xd, N)])] // update
+    #[case(&[(0x3, 0x6, N), (0xa, 0xd, N), (0xa, 0xd, R)], &[(0x3, 0x6, N), (0xa, 0xd, R)])] // update
+    #[case(&[(0x3, 0x6, N), (0xa, 0xd, N), (0x0, 0xf, N)], &[(0x0, 0xf, N)])] // replace
+    #[case(&[(0x3, 0x6, N), (0xa, 0xd, N), (0x0, 0xf, R)], &[(0x0, 0xf, R)])] // replace
+    #[case(&[(0x3, 0x6, N), (0xa, 0xd, N), (0x4, 0x5, N)], &[(0x3, 0x6, N), (0xa, 0xd, N)])] // no split
+    #[case(&[(0x3, 0x6, N), (0xa, 0xd, N), (0xb, 0xc, N)], &[(0x3, 0x6, N), (0xa, 0xd, N)])] // no split
+    #[case(&[(0x3, 0x6, N), (0xa, 0xd, N), (0x4, 0x5, R)], &[(0x3, 0x4, N), (0x4, 0x5, R), (0x5, 0x6, N), (0xa, 0xd, N)])] // split
+    #[case(&[(0x3, 0x6, N), (0xa, 0xd, N), (0xb, 0xc, R)], &[(0x3, 0x6, N), (0xa, 0xb, N), (0xb, 0xc, R), (0xc, 0xd, N)])] // split
+    #[case(&[(0x3, 0x6, N), (0xa, 0xd, N), (0x2, 0x4, R)], &[(0x2, 0x4, R), (0x4, 0x6, N), (0xa, 0xd, N)])] // overlap before
+    #[case(&[(0x3, 0x6, N), (0xa, 0xd, N), (0x9, 0xb, R)], &[(0x3, 0x6, N), (0x9, 0xb, R), (0xb, 0xd, N)])] // overlap before
+    #[case(&[(0x3, 0x6, N), (0xa, 0xd, N), (0x5, 0x7, R)], &[(0x3, 0x5, N), (0x5, 0x7, R), (0xa, 0xd, N)])] // overlap after
+    #[case(&[(0x3, 0x6, N), (0xa, 0xd, N), (0xc, 0xe, R)], &[(0x3, 0x6, N), (0xa, 0xc, N), (0xc, 0xe, R)])] // overlap after
+    fn map(#[case] maps: &[(usize, usize, Access)], #[case] expected: &[(usize, usize, Access)]) {
+        let maps = maps
             .iter()
             .cloned()
             .map(|record| Record {
@@ -457,31 +551,7 @@ mod tests {
             })
             .collect::<Vec<_>>();
 
-        let mut ledger = LEDGER.clone();
-        assert_eq!(ledger.records(), &[PREV, NEXT]);
-
-        ledger.map(record.region, record.access).unwrap();
-        assert_eq!(ledger.records(), &records);
-    }
-
-    #[rstest::rstest]
-    #[case((0x1, 0xf), &[])] // clear
-    #[case((0x0, 0x1), &[(0x3, 0x6, N), (0xa, 0xd, N)])] // noop
-    #[case((0x7, 0x8), &[(0x3, 0x6, N), (0xa, 0xd, N)])] // noop
-    #[case((0xe, 0xf), &[(0x3, 0x6, N), (0xa, 0xd, N)])] // noop
-    #[case((0x3, 0x6), &[(0xa, 0xd, N)])] // remove
-    #[case((0xa, 0xd), &[(0x3, 0x6, N)])] // remove
-    #[case((0x2, 0x7), &[(0xa, 0xd, N)])] // remove oversized
-    #[case((0x9, 0xe), &[(0x3, 0x6, N)])] // remove oversized
-    #[case((0x2, 0x4), &[(0x4, 0x6, N), (0xa, 0xd, N)])] // overlap before
-    #[case((0x9, 0xb), &[(0x3, 0x6, N), (0xb, 0xd, N)])] // overlap before
-    #[case((0x5, 0x7), &[(0x3, 0x5, N), (0xa, 0xd, N)])] // overlap after
-    #[case((0xc, 0xe), &[(0x3, 0x6, N), (0xa, 0xc, N)])] // overlap after
-    #[case((0x4, 0x5), &[(0x3, 0x4, N), (0x5, 0x6, N), (0xa, 0xd, N)])] // split
-    #[case((0xb, 0xc), &[(0x3, 0x6, N), (0xa, 0xb, N), (0xc, 0xd, N)])] // split
-    fn unmap(#[case] record: (usize, usize), #[case] records: &[(usize, usize, Access)]) {
-        let region = Region::new(Address::new(record.0 << 12), Address::new(record.1 << 12));
-        let records = records
+        let expected = expected
             .iter()
             .cloned()
             .map(|record| Record {
@@ -490,43 +560,161 @@ mod tests {
             })
             .collect::<Vec<_>>();
 
-        let mut ledger = LEDGER.clone();
-        assert_eq!(ledger.records(), &[PREV, NEXT]);
+        let mut ledger = EMPTY_LEDGER.clone();
 
-        ledger.unmap(region).unwrap();
-        assert_eq!(ledger.records(), &records);
+        println!("Maps:");
+        trace_records(&maps);
+
+        for record in maps {
+            ledger.map(record.region, record.access).unwrap();
+        }
+
+        println!("Result:");
+        trace_assert_records_eq(ledger.records(), &expected);
     }
 
     #[rstest::rstest]
-    #[case(0x01, Some(0x00))]
-    #[case(0x02, Some(0x00))]
-    #[case(0x03, Some(0x00))]
-    #[case(0x04, Some(0x06))]
-    #[case(0x05, None)]
-    fn find_free_front(#[case] length: usize, #[case] result: Option<usize>) {
-        let ledger = LEDGER.clone();
-        assert_eq!(ledger.records(), &[PREV, NEXT]);
+    #[case(&[(0x0, 0x3), (0x6, 0xa), (0xd, 0x10)], &[(0x3, 0x6, N), (0xa, 0xd, N)])] // split
+    #[case(&[(0x0, 0x3), (0x6, 0xa), (0xd, 0x10), (0x1, 0xf)], &[])] // clear
+    #[case(&[(0x0, 0x3), (0x6, 0xa), (0xd, 0x10), (0x0, 0x1)], &[(0x3, 0x6, N), (0xa, 0xd, N)])] // noop
+    #[case(&[(0x0, 0x3), (0x6, 0xa), (0xd, 0x10), (0x7, 0x8)], &[(0x3, 0x6, N), (0xa, 0xd, N)])] // noop
+    #[case(&[(0x0, 0x3), (0x6, 0xa), (0xd, 0x10), (0xe, 0xf)], &[(0x3, 0x6, N), (0xa, 0xd, N)])] // noop
+    #[case(&[(0x0, 0x3), (0x6, 0xa), (0xd, 0x10), (0x3, 0x6)], &[(0xa, 0xd, N)])] // remove
+    #[case(&[(0x0, 0x3), (0x6, 0xa), (0xd, 0x10), (0xa, 0xd)], &[(0x3, 0x6, N)])] // remove
+    #[case(&[(0x0, 0x3), (0x6, 0xa), (0xd, 0x10), (0x2, 0x7)], &[(0xa, 0xd, N)])] // remove oversized
+    #[case(&[(0x0, 0x3), (0x6, 0xa), (0xd, 0x10), (0x9, 0xe)], &[(0x3, 0x6, N)])] // remove oversized
+    #[case(&[(0x0, 0x3), (0x6, 0xa), (0xd, 0x10), (0x2, 0x4)], &[(0x4, 0x6, N), (0xa, 0xd, N)])] // overlap before
+    #[case(&[(0x0, 0x3), (0x6, 0xa), (0xd, 0x10), (0x9, 0xb)], &[(0x3, 0x6, N), (0xb, 0xd, N)])] // overlap before
+    #[case(&[(0x0, 0x3), (0x6, 0xa), (0xd, 0x10), (0x5, 0x7)], &[(0x3, 0x5, N), (0xa, 0xd, N)])] // overlap after
+    #[case(&[(0x0, 0x3), (0x6, 0xa), (0xd, 0x10), (0xc, 0xe)], &[(0x3, 0x6, N), (0xa, 0xc, N)])] // overlap after
+    #[case(&[(0x0, 0x3), (0x6, 0xa), (0xd, 0x10), (0x4, 0x5)], &[(0x3, 0x4, N), (0x5, 0x6, N), (0xa, 0xd, N)])] // split
+    #[case(&[(0x0, 0x3), (0x6, 0xa), (0xd, 0x10), (0xb, 0xc)], &[(0x3, 0x6, N), (0xa, 0xb, N), (0xc, 0xd, N)])] // split
+    fn unmap(#[case] unmaps: &[(usize, usize)], #[case] expected: &[(usize, usize, Access)]) {
+        let unmaps = unmaps
+            .iter()
+            .cloned()
+            .map(|record| Region::new(Address::new(record.0 << 12), Address::new(record.1 << 12)))
+            .collect::<Vec<_>>();
 
-        let length: Offset<usize, Page> = Offset::from_items(length);
-        let result = result.map(|result| Address::new(result * size_of::<Page>()));
+        let expected = expected
+            .iter()
+            .cloned()
+            .map(|record| Record {
+                region: Region::new(Address::new(record.0 << 12), Address::new(record.1 << 12)),
+                access: record.2,
+            })
+            .collect::<Vec<_>>();
 
-        assert_eq!(result, ledger.find_free_front(length));
+        let mut ledger = FULL_LEDGER.clone();
+        assert_eq!(ledger.records(), &[FULL]);
+
+        println!("Unmaps:");
+        trace_regions(&unmaps);
+
+        for region in unmaps {
+            ledger.unmap(region).unwrap();
+        }
+
+        println!("Result:");
+        trace_assert_records_eq(ledger.records(), &expected);
     }
 
     #[rstest::rstest]
-    #[case(0x01, Some(0x0F))]
-    #[case(0x02, Some(0x0E))]
-    #[case(0x03, Some(0x0D))]
-    #[case(0x04, Some(0x06))]
-    #[case(0x05, None)]
-    fn find_free_back(#[case] length: usize, #[case] result: Option<usize>) {
-        let ledger = LEDGER.clone();
-        assert_eq!(ledger.records(), &[PREV, NEXT]);
+    #[case(0x1, &[(0x3, 0x6, N), (0xa, 0xd, N)], &[(0x0, 0x1, N), (0x3, 0x6, N), (0xa, 0xd, N)])]
+    #[case(0x2, &[(0x3, 0x6, N), (0xa, 0xd, N)], &[(0x0, 0x2, N), (0x3, 0x6, N), (0xa, 0xd, N)])]
+    #[case(0x3, &[(0x3, 0x6, N), (0xa, 0xd, N)], &[(0x0, 0x6, N), (0xa, 0xd, N)])]
+    #[case(0x4, &[(0x3, 0x6, N), (0xa, 0xd, N)], &[(0x3, 0xd, N)])]
+    #[case(0x5, &[(0x3, 0x6, N), (0xa, 0xd, N)], &[(0x3, 0x6, N), (0xa, 0xd, N)])]
+    fn find_free_front(
+        #[case] length: usize,
+        #[case] maps: &[(usize, usize, Access)],
+        #[case] expected: &[(usize, usize, Access)],
+    ) {
+        let length = Offset::from_items(length);
+        let maps = maps
+            .iter()
+            .cloned()
+            .map(|record| Record {
+                region: Region::new(Address::new(record.0 << 12), Address::new(record.1 << 12)),
+                access: record.2,
+            })
+            .collect::<Vec<_>>();
+        let expected = expected
+            .iter()
+            .cloned()
+            .map(|record| Record {
+                region: Region::new(Address::new(record.0 << 12), Address::new(record.1 << 12)),
+                access: record.2,
+            })
+            .collect::<Vec<_>>();
 
-        let length: Offset<usize, Page> = Offset::from_items(length);
-        let result = result.map(|result| Address::new(result * size_of::<Page>()));
+        let mut ledger = EMPTY_LEDGER.clone();
 
-        assert_eq!(result, ledger.find_free_back(length));
+        println!("Length: {}", length);
+        println!("Maps:");
+        trace_records(&maps);
+
+        for record in maps {
+            ledger.map(record.region, record.access).unwrap();
+        }
+
+        if let Some(addr) = ledger.find_free_front(length) {
+            let end = addr + length;
+            let region = Region::new(addr, end);
+            ledger.map(region, Access::empty()).unwrap();
+        }
+
+        println!("Result:");
+        trace_assert_records_eq(ledger.records(), &expected);
+    }
+
+    #[rstest::rstest]
+    #[case(0x1, &[(0x3, 0x6, N), (0xa, 0xd, N)], &[(0x3, 0x6, N), (0xa, 0xd, N), (0xf, 0x10, N)])]
+    #[case(0x2, &[(0x3, 0x6, N), (0xa, 0xd, N)], &[(0x3, 0x6, N), (0xa, 0xd, N), (0xe, 0x10, N)])]
+    #[case(0x3, &[(0x3, 0x6, N), (0xa, 0xd, N)], &[(0x3, 0x6, N), (0xa, 0x10, N)])]
+    #[case(0x4, &[(0x3, 0x6, N), (0xa, 0xd, N)], &[(0x3, 0xd, N)])]
+    #[case(0x5, &[(0x3, 0x6, N), (0xa, 0xd, N)], &[(0x3, 0x6, N), (0xa, 0xd, N)])]
+    fn find_free_back(
+        #[case] length: usize,
+        #[case] maps: &[(usize, usize, Access)],
+        #[case] expected: &[(usize, usize, Access)],
+    ) {
+        let length = Offset::from_items(length);
+        let maps = maps
+            .iter()
+            .cloned()
+            .map(|record| Record {
+                region: Region::new(Address::new(record.0 << 12), Address::new(record.1 << 12)),
+                access: record.2,
+            })
+            .collect::<Vec<_>>();
+        let expected = expected
+            .iter()
+            .cloned()
+            .map(|record| Record {
+                region: Region::new(Address::new(record.0 << 12), Address::new(record.1 << 12)),
+                access: record.2,
+            })
+            .collect::<Vec<_>>();
+
+        let mut ledger = EMPTY_LEDGER.clone();
+
+        println!("Length: {}", length);
+        println!("Maps:");
+        trace_records(&maps);
+
+        for record in maps {
+            ledger.map(record.region, record.access).unwrap();
+        }
+
+        if let Some(addr) = ledger.find_free_back(length) {
+            let end = addr + length;
+            let region = Region::new(addr, end);
+            ledger.map(region, Access::empty()).unwrap();
+        }
+
+        println!("Result:");
+        trace_assert_records_eq(ledger.records(), &expected);
     }
 
     #[test]
