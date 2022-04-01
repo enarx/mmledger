@@ -412,6 +412,23 @@ mod tests {
         length: 2,
     };
 
+    const FULL: Record = Record {
+        region: Region::new(Address::new(0), Address::new(0x10000)),
+        access: Access::empty(),
+    };
+
+    const FULL_LEDGER: Ledger<5> = Ledger {
+        records: [
+            FULL,
+            Record::EMPTY,
+            Record::EMPTY,
+            Record::EMPTY,
+            Record::EMPTY,
+        ],
+        region: Region::new(Address::new(0x0000), Address::new(0x10000)),
+        length: 1,
+    };
+
     #[rstest::rstest]
     #[case((0x0, 0x1, N), &[(0x0, 0x1, N), (0x3, 0x6, N), (0xa, 0xd, N)])] // normal insert
     #[case((0x7, 0x8, N), &[(0x3, 0x6, N), (0x7, 0x8, N), (0xa, 0xd, N)])] // normal insert
@@ -495,6 +512,48 @@ mod tests {
 
         ledger.unmap(region).unwrap();
         assert_eq!(ledger.records(), &records);
+    }
+
+    #[rstest::rstest]
+    #[case(&[(0x1, 0xf)], &[(0x0, 0x1, N), (0xf, 0x10, N)])]
+    #[case(&[(0x0, 0x1)], &[(0x1, 0x10, N)])]
+    #[case(&[(0xf, 0x10)], &[(0x0, 0xf, N)])]
+    #[case(&[(0x7, 0x8)], &[(0x0, 0x7, N), (0x8, 0x10, N)])]
+    #[case(&[(0xe, 0xf)], &[(0x0, 0xe, N), (0xf, 0x10, N)])]
+    #[case(&[(0x3, 0x6)], &[(0x0, 0x3, N), (0x6, 0x10, N)])]
+    #[case(&[(0xa, 0xd)], &[(0x0, 0xa, N), (0xd, 0x10, N)])]
+    #[case(&[(0x2, 0x7)], &[(0x0, 0x2, N), (0x7, 0x10, N)])]
+    #[case(&[(0x9, 0xe)], &[(0x0, 0x9, N), (0xe, 0x10, N)])]
+    #[case(&[(0x2, 0x4)], &[(0x0, 0x2, N), (0x4, 0x10, N)])]
+    #[case(&[(0x9, 0xb)], &[(0x0, 0x9, N), (0xb, 0x10, N)])]
+    #[case(&[(0x5, 0x7)], &[(0x0, 0x5, N), (0x7, 0x10, N)])]
+    #[case(&[(0xc, 0xe)], &[(0x0, 0xc, N), (0xe, 0x10, N)])]
+    #[case(&[(0x4, 0x5)], &[(0x0, 0x4, N), (0x5, 0x10, N)])]
+    #[case(&[(0xb, 0xc)], &[(0x0, 0xb, N), (0xc, 0x10, N)])]
+    fn unmap_full(#[case] input: &[(usize, usize)], #[case] output: &[(usize, usize, Access)]) {
+        let input = input
+            .iter()
+            .cloned()
+            .map(|record| Region::new(Address::new(record.0 << 12), Address::new(record.1 << 12)))
+            .collect::<Vec<_>>();
+
+        let output = output
+            .iter()
+            .cloned()
+            .map(|record| Record {
+                region: Region::new(Address::new(record.0 << 12), Address::new(record.1 << 12)),
+                access: record.2,
+            })
+            .collect::<Vec<_>>();
+
+        let mut ledger = FULL_LEDGER.clone();
+        assert_eq!(ledger.records(), &[FULL]);
+
+        for region in input {
+            ledger.unmap(region).unwrap();
+        }
+
+        assert_eq!(ledger.records(), &output);
     }
 
     #[rstest::rstest]
