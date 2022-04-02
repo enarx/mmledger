@@ -84,10 +84,6 @@ impl Record {
         region: Region::new(Address::NULL, Address::NULL),
         access: Access::empty(),
     };
-
-    fn is_mergable(&self, other: &Self) -> bool {
-        self.access == other.access && self.region.end == other.region.start
-    }
 }
 
 /// Ledger error conditions.
@@ -130,6 +126,7 @@ impl<const N: usize> Ledger<N> {
     /// Insert a record at the index, shifting later records right.
     fn insert(&mut self, index: usize, record: Record) -> Result<(), Error> {
         assert!(self.length <= self.records.len());
+        assert!(self.length == self.records().len());
         assert!(self.length >= index);
 
         if self.length == self.records.len() {
@@ -164,123 +161,68 @@ impl<const N: usize> Ledger<N> {
         &mut self.records[..self.length]
     }
 
+    /// Merge adjacent records.
+    fn merge(&mut self) -> Result<(), Error> {
+        let length = self.records().len();
+        let mut merges = 0;
+        for (p, n) in (0..length).zip(1..length) {
+            let prev = self.records()[p - merges];
+            let next = self.records()[n - merges];
+            if prev.region.end == next.region.start && prev.access == next.access {
+                self.records_mut()[n - merges].region.start = prev.region.start;
+                self.remove(p - merges);
+                merges += 1;
+            }
+        }
+        Ok(())
+    }
+
     /// Adds a new record to the ledger, potentially merging with existing records.
     pub fn map(&mut self, region: Region, access: Access) -> Result<(), Error> {
-        let record = Record { region, access };
-
         // Make sure the record is valid.
-        if record.region.start >= record.region.end {
+        if region.start >= region.end {
             return Err(Error::InvalidRegion);
         }
 
         // Make sure the record fits in our adress space.
-        if !self.region.contains(&record.region) {
+        if !self.region.contains(&region) {
             return Err(Error::Overflow);
         }
 
-        // Find the start of the records that might interact with the new record.
-        let base = self
-            .records()
-            .partition_point(|r| r.region.end < record.region.start);
-
-        // Identify leading records that may interact with the new record.
-        let head = self.records()[base..]
-            .iter()
-            .take_while(|r| !record.region.contains(&r.region))
-            .take_while(|r| r.region.start <= record.region.end)
-            .count();
-
-        // Drop all records fully contained by the new record.
-        let drop = self.records_mut()[base + head..]
-            .iter_mut()
-            .take_while(|r| r.region != record.region)
-            .take_while(|r| record.region.contains(&r.region))
-            .map(|r| *r = Record::EMPTY)
-            .count();
-        self.records_mut()[base + head..].rotate_left(drop);
-        self.length -= drop;
-
-        // Identify tailing records that may interact with the new record.
-        let tail = self.records()[base + head..]
-            .iter()
-            .take_while(|r| r.region.start <= record.region.end)
-            .count();
-
-        // Handle all overlaps.
-        for i in base..base + head + tail {
-            let r = &mut self.records[i];
-
-            // If the regions match, just update permissions.
-            if r.region == record.region {
-                r.access = record.access;
-                return Ok(());
-            }
-
-            // If the new record is in the middle of an old record with space
-            // on both sides, then we have to split the old record.
-            if r.region.start < record.region.start && record.region.end < r.region.end {
-                if r.access != record.access {
-                    if self.length + 2 > N {
-                        return Err(Error::OutOfCapacity);
-                    }
-
-                    let new = Region::new(record.region.end, r.region.end);
-                    let new = r.access.record(new);
-                    r.region.end = record.region.start;
-
-                    self.length += 2;
-                    self.records_mut()[i + 1..].rotate_right(2);
-                    self.records[i + 1] = record;
-                    self.records[i + 2] = new;
-                }
-
-                return Ok(());
-            }
-
-            // Truncate overlapping regions.
-            if r.region.contains(&record.region.start) {
-                r.region.end = record.region.start;
-            } else if r.region.contains(&record.region.end) {
-                r.region.start = record.region.end;
-            }
+        // Clear out the space for the new record.
+        if let Err(err) = self.unmap(region) {
+            return Err(err);
         }
 
-        // Prepare for merge attempts.
-        let view = &self.records()[base..base + head + tail];
-        let indx = base + view.partition_point(|r| r.region.end <= record.region.start);
-        let (prev, next) = self.records_mut().split_at_mut(indx);
-        let (mut prev, mut next) = (prev.last_mut(), next.first_mut());
+        match self.records().len() {
+            0 => self.insert(0, Record { region, access }).and(self.merge()),
+            1 => {
+                let record = self.records()[0];
 
-        // Potentially merge after `prev`.
-        let merged_lhs = match prev.as_mut() {
-            Some(prev) if prev.is_mergable(&record) => {
-                prev.region.end = record.region.end;
-                true
+                // Self-consistency check.
+                assert!(record.region.start < record.region.end);
+
+                if region.start < record.region.start {
+                    self.insert(0, Record { region, access }).and(self.merge())
+                } else {
+                    self.insert(1, Record { region, access }).and(self.merge())
+                }
             }
-            _ => false,
-        };
+            _ => {
+                for i in 0..self.records().len() {
+                    let record = self.records()[i];
 
-        // Potentially merge before `next`.
-        let merged_rhs = match next.as_mut() {
-            Some(next) if record.is_mergable(next) => {
-                next.region.start = record.region.start;
-                true
+                    // Self-consistency check.
+                    assert!(record.region.start < record.region.end);
+
+                    if region.start < record.region.start {
+                        return self.insert(i, Record { region, access }).and(self.merge());
+                    }
+                }
+
+                self.insert(self.records().len(), Record { region, access })
+                    .and(self.merge())
             }
-            _ => false,
-        };
-
-        match ((merged_lhs, merged_rhs), (prev, next)) {
-            // We merged in both directions. Merge again.
-            ((true, true), (Some(prev), Some(this))) => {
-                this.region.start = prev.region.start;
-                self.remove(indx - 1);
-                Ok(())
-            }
-
-            ((false, false), ..) => self.insert(indx, record),
-            ((true, true), ..) => unreachable!(),
-            ((true, false), ..) => Ok(()),
-            ((false, true), ..) => Ok(()),
         }
     }
 
