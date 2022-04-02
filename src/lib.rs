@@ -108,34 +108,37 @@ pub enum Error {
 /// A virtual memory map ledger.
 #[derive(Clone, Debug)]
 pub struct Ledger<const N: usize> {
+    /// Memory records stored into the ledger.
     records: [Record; N],
+    /// Address region that the ledger maintains.
     region: Region,
-    length: usize,
+    /// Tail of the records currently in the ledger.
+    tail: usize,
 }
 
 impl<const N: usize> Ledger<N> {
     /// Remove the record at index.
     fn remove(&mut self, index: usize) {
-        assert!(self.length > index);
+        assert!(self.tail > index);
 
         self.records[index] = Record::EMPTY;
         self.records[index..].rotate_left(1);
-        self.length -= 1;
+        self.tail -= 1;
     }
 
     /// Insert a record at the index, shifting later records right.
     fn insert(&mut self, index: usize, record: Record) -> Result<(), Error> {
-        assert!(self.length <= self.records.len());
-        assert!(self.length == self.records().len());
-        assert!(self.length >= index);
+        assert!(self.tail <= self.records.len());
+        assert!(self.tail == self.records().len());
+        assert!(self.tail >= index);
 
-        if self.length == self.records.len() {
+        if self.tail == self.records.len() {
             return Err(Error::OutOfCapacity);
         }
 
         self.records[index..].rotate_right(1);
         self.records[index] = record;
-        self.length += 1;
+        self.tail += 1;
 
         Ok(())
     }
@@ -145,20 +148,20 @@ impl<const N: usize> Ledger<N> {
         Self {
             records: [Record::EMPTY; N],
             region,
-            length: 0,
+            tail: 0,
         }
     }
 
     /// Get an immutable view of the records.
     pub fn records(&self) -> &[Record] {
-        &self.records[..self.length]
+        &self.records[..self.tail]
     }
 
     /// Get a mutable view of the records.
     ///
     /// This function MUST NOT be public.
     fn records_mut(&mut self) -> &mut [Record] {
-        &mut self.records[..self.length]
+        &mut self.records[..self.tail]
     }
 
     /// Merge adjacent records.
@@ -232,7 +235,7 @@ impl<const N: usize> Ledger<N> {
             return None;
         }
 
-        if self.length == 0 {
+        if self.tail == 0 {
             return Some(self.region.start);
         }
 
@@ -243,7 +246,7 @@ impl<const N: usize> Ledger<N> {
         }
 
         // Gaps:
-        for (prev, next) in (0..self.length).zip(1..self.length) {
+        for (prev, next) in (0..self.tail).zip(1..self.tail) {
             let prev = self.records[prev].region;
             let next = self.records[next].region;
             let gap = next.start - prev.end;
@@ -268,7 +271,7 @@ impl<const N: usize> Ledger<N> {
             return None;
         }
 
-        if self.length == 0 {
+        if self.tail == 0 {
             return Some(self.region.end - length);
         }
 
@@ -280,7 +283,7 @@ impl<const N: usize> Ledger<N> {
         }
 
         // Gaps:
-        for (prev, next) in (0..self.length).zip(1..self.length) {
+        for (prev, next) in (0..self.tail).zip(1..self.tail) {
             let prev = self.records[prev].region;
             let next = self.records[next].region;
             let gap = next.start - prev.end;
@@ -291,7 +294,7 @@ impl<const N: usize> Ledger<N> {
 
         // Front tail:
         let first = self.records().first().unwrap().region;
-        if self.length == 0 || Address::new(length.bytes()) <= first.start {
+        if self.tail == 0 || Address::new(length.bytes()) <= first.start {
             return Some(first.start - length);
         }
 
@@ -310,7 +313,7 @@ impl<const N: usize> Ledger<N> {
 
         let mut index = 0;
 
-        while index < self.length {
+        while index < self.tail {
             let record_start = self.records[index].region.start;
             let record_end = self.records[index].region.end;
 
@@ -372,7 +375,7 @@ mod tests {
     const EMPTY_LEDGER: Ledger<5> = Ledger {
         records: [Record::EMPTY; 5],
         region: Region::new(Address::new(0x0000), Address::new(0x10000)),
-        length: 0,
+        tail: 0,
     };
 
     const FULL_LEDGER: Ledger<5> = Ledger {
@@ -384,7 +387,7 @@ mod tests {
             Record::EMPTY,
         ],
         region: Region::new(Address::new(0x0000), Address::new(0x10000)),
-        length: 1,
+        tail: 1,
     };
 
     fn trace_records(records: &[Record]) {
