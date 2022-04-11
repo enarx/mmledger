@@ -2,8 +2,8 @@
 name = "mmledger"
 version = "0.1.13"
 license = "Apache-2.0"
-homepage = "https://github.com/jarkkojs/mmledger"
-repository = "https://github.com/jarkkojs/mmledger"
+homepage = "https://github.com/enarx/mmledger"
+repository = "https://github.com/enarx/mmledger"
 description = "A ledger for confidential computing (CC) shims for tracking memory management system calls"
 edition = "2021"
 rust-version = "1.57"
@@ -14,8 +14,8 @@ include = [
 
 [dependencies]
 bitflags = "1.0.4"
-lset = { git = "https://github.com/enarx/lset", rev = "5c2feed24d85442725f55d812315854e1b29595d"  }
-primordial = { git = "https://github.com/enarx/primordial", rev = "b606b9e472e2238384b003f12fdada077e04d2fe" }
+lset = "0.3.0"
+primordial = "0.5.0"
 
 [dev-dependencies]
 rstest = "0.12.0"
