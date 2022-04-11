@@ -16,8 +16,9 @@ checksum = "baf1de4339761588bc0619e3cbc0120ee582ebb74b53b4efbf79117bd2da40fd"
 
 [[package]]
 name = "lset"
-version = "0.2.0"
-source = "git+https://github.com/enarx/lset?rev=5c2feed24d85442725f55d812315854e1b29595d#5c2feed24d85442725f55d812315854e1b29595d"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3919d8ed5e9b055f0fd725e3f4c324052df3f8c893824a5fcbffea36356abfb5"
 
 [[package]]
 name = "mmledger"
@@ -31,8 +32,9 @@ dependencies = [
 
 [[package]]
 name = "primordial"
-version = "0.4.0"
-source = "git+https://github.com/enarx/primordial?rev=b606b9e472e2238384b003f12fdada077e04d2fe#b606b9e472e2238384b003f12fdada077e04d2fe"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b24688c4d0374cf896ccde4b79d111d1c12e7b2ab6ec272c57aedc304cb1791d"
 
 [[package]]
 name = "proc-macro2"
