@@ -95,13 +95,7 @@ pub enum Error {
     /// No space for the region
     OutOfSpace,
 
-    /// Not inside the address space
-    Overflow,
-
-    /// Overlap with the existing regions
-    Overlap,
-
-    /// Invalid region
+    /// The given region has corrupted contents
     InvalidRegion,
 }
 
@@ -182,14 +176,8 @@ impl<const N: usize> Ledger<N> {
 
     /// Adds a new record to the ledger, potentially merging with existing records.
     pub fn map(&mut self, region: Region, access: Access) -> Result<(), Error> {
-        // Make sure the record is valid.
-        if region.start >= region.end {
+        if region.start >= region.end || !self.region.contains(&region) {
             return Err(Error::InvalidRegion);
-        }
-
-        // Make sure the record fits in our adress space.
-        if !self.region.contains(&region) {
-            return Err(Error::Overflow);
         }
 
         // Clear out the space for the new record.
@@ -303,12 +291,8 @@ impl<const N: usize> Ledger<N> {
 
     /// Delete sub-regions.
     pub fn unmap(&mut self, region: Region) -> Result<(), Error> {
-        if region.start >= region.end {
+        if region.start >= region.end || !self.region.contains(&region) {
             return Err(Error::InvalidRegion);
-        }
-
-        if region.start < self.region.start || region.end > self.region.end {
-            return Err(Error::Overflow);
         }
 
         let mut index = 0;
