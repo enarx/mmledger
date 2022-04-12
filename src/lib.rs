@@ -152,6 +152,34 @@ impl<const N: usize> Ledger<N> {
         }
     }
 
+    /// Check whether the ledger contains the given region, and return the
+    /// maximum allowed access for it.
+    pub fn contains(&self, region: Region) -> Option<Access> {
+        if region.start >= region.end || !self.region.contains(&region) {
+            return None;
+        }
+
+        let mut start = region.start;
+        let mut access = Access::all();
+
+        for record in self.records() {
+            if let Some(slice) = record.region.intersection(Region::new(start, region.end)) {
+                if start != slice.start {
+                    return None;
+                }
+
+                start = slice.end;
+                access &= record.access;
+
+                if start == region.end {
+                    return Some(access);
+                }
+            }
+        }
+
+        None
+    }
+
     /// Get an immutable view of the records.
     pub fn records(&self) -> &[Record] {
         &self.records[..self.tail]
@@ -447,6 +475,43 @@ mod tests {
         }
 
         assert!(equal);
+    }
+
+    #[rstest::rstest]
+    #[case(&[(0x3, 0x6, N), (0x6, 0xa, R), (0xa, 0xd, N)], (0x0, 0x0d, None))]
+    #[case(&[(0x3, 0x6, N), (0x6, 0xa, R), (0xa, 0xd, N)], (0x3, 0x10, None))]
+    #[case(&[(0x3, 0x6, N), (0x6, 0xa, R), (0xa, 0xd, N)], (0x0, 0x10, None))]
+    #[case(&[(0x3, 0x6, N), (0x6, 0xa, R), (0xa, 0xd, N)], (0x3, 0xd, Some(N)))]
+    #[case(&[(0x3, 0x6, N), (0x6, 0xa, R), (0xa, 0xd, N)], (0x6, 0xa, Some(R)))]
+    fn contains(
+        #[case] maps: &[(usize, usize, Access)],
+        #[case] expected: (usize, usize, Option<Access>),
+    ) {
+        let mut ledger = EMPTY_LEDGER.clone();
+        for record in maps
+            .iter()
+            .cloned()
+            .map(|r| Record {
+                region: Region::new(Address::new(r.0 << 12), Address::new(r.1 << 12)),
+                access: r.2,
+            })
+            .collect::<Vec<_>>()
+        {
+            ledger.map(record.region, record.access).unwrap();
+        }
+
+        println!("Maps:");
+        trace_records(&ledger.records);
+        println!("Region:");
+        println!("({:>#08x}, {:>#08x})", expected.0 << 12, expected.1 << 12,);
+
+        assert_eq!(
+            ledger.contains(Region::new(
+                Address::new(expected.0 << 12),
+                Address::new(expected.1 << 12)
+            )),
+            expected.2
+        );
     }
 
     #[rstest::rstest]
