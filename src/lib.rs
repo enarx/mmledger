@@ -86,23 +86,14 @@ impl Record {
     };
 }
 
-/// Ledger error conditions.
+/// Ledger error codes
 #[derive(Debug)]
 pub enum Error {
     /// Out of storage capacity
     OutOfCapacity,
 
-    /// No space for the region
+    /// No gap longer than the given length available
     OutOfSpace,
-
-    /// Not inside the address space
-    Overflow,
-
-    /// Overlap with the existing regions
-    Overlap,
-
-    /// Invalid region
-    InvalidRegion,
 }
 
 /// A virtual memory map ledger.
@@ -182,15 +173,8 @@ impl<const N: usize> Ledger<N> {
 
     /// Adds a new record to the ledger, potentially merging with existing records.
     pub fn map(&mut self, region: Region, access: Access) -> Result<(), Error> {
-        // Make sure the record is valid.
-        if region.start >= region.end {
-            return Err(Error::InvalidRegion);
-        }
-
-        // Make sure the record fits in our adress space.
-        if !self.region.contains(&region) {
-            return Err(Error::Overflow);
-        }
+        assert!(region.start < region.end);
+        assert!(self.region.contains(&region));
 
         // Clear out the space for the new record.
         if let Err(err) = self.unmap(region) {
@@ -303,13 +287,8 @@ impl<const N: usize> Ledger<N> {
 
     /// Delete sub-regions.
     pub fn unmap(&mut self, region: Region) -> Result<(), Error> {
-        if region.start >= region.end {
-            return Err(Error::InvalidRegion);
-        }
-
-        if region.start < self.region.start || region.end > self.region.end {
-            return Err(Error::Overflow);
-        }
+        assert!(region.start < region.end);
+        assert!(self.region.contains(&region));
 
         let mut index = 0;
 
