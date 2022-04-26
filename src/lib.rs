@@ -174,6 +174,18 @@ impl<const N: usize> Ledger<N> {
         None
     }
 
+    /// Check whether the existing addresses in the ledger overlap with the
+    /// given region.
+    pub fn overlaps(&self, region: Region) -> bool {
+        if region.start >= region.end || !self.region.contains(&region) {
+            return false;
+        }
+
+        self.records()
+            .iter()
+            .any(|record| region.start < record.region.end && region.end > record.region.start)
+    }
+
     /// Get an immutable view of the records.
     pub fn records(&self) -> &[Record] {
         &self.records[..self.tail]
@@ -491,6 +503,40 @@ mod tests {
 
         assert_eq!(
             ledger.contains(Region::new(
+                Address::new(expected.0 << 12),
+                Address::new(expected.1 << 12)
+            )),
+            expected.2
+        );
+    }
+
+    #[rstest::rstest]
+    #[case(&[(0x3, 0x6, N), (0x6, 0xa, R), (0xa, 0xd, N)], (0x0, 0x10, true))]
+    #[case(&[(0x3, 0x6, N), (0x6, 0xa, R), (0xa, 0xd, N)], (0x2, 0x7, true))]
+    #[case(&[(0x3, 0x6, N), (0x6, 0xa, R), (0xa, 0xd, N)], (0xc, 0xe, true))]
+    #[case(&[(0x3, 0x6, N), (0x6, 0xa, R), (0xa, 0xd, N)], (0xd, 0xe, false))]
+    #[case(&[(0x3, 0x6, N), (0x6, 0xa, R), (0xa, 0xd, N)], (0x2, 0x3, false))]
+    fn overlaps(#[case] maps: &[(usize, usize, Access)], #[case] expected: (usize, usize, bool)) {
+        let mut ledger = EMPTY_LEDGER.clone();
+        for record in maps
+            .iter()
+            .cloned()
+            .map(|r| Record {
+                region: Region::new(Address::new(r.0 << 12), Address::new(r.1 << 12)),
+                access: r.2,
+            })
+            .collect::<Vec<_>>()
+        {
+            ledger.map(record.region, record.access).unwrap();
+        }
+
+        println!("Maps:");
+        trace_records(&ledger.records);
+        println!("Region:");
+        println!("({:>#08x}, {:>#08x})", expected.0 << 12, expected.1 << 12,);
+
+        assert_eq!(
+            ledger.overlaps(Region::new(
                 Address::new(expected.0 << 12),
                 Address::new(expected.1 << 12)
             )),
