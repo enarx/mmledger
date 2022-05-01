@@ -94,9 +94,6 @@ pub enum Error {
 
     /// No space for the region
     OutOfSpace,
-
-    /// The given region has corrupted contents
-    InvalidRegion,
 }
 
 /// A virtual memory map ledger.
@@ -137,7 +134,8 @@ impl<const N: usize> Ledger<N> {
         Ok(())
     }
 
-    /// Create a new instance.
+    /// Create a new instance. Make sure that `region.start < region.end`,
+    /// because otherwise the ledger will exhibit undefined behaviour.
     pub const fn new(region: Region) -> Self {
         Self {
             records: [Record::EMPTY; N],
@@ -147,14 +145,19 @@ impl<const N: usize> Ledger<N> {
     }
 
     /// Check whether the ledger contains the given region, and return the
-    /// maximum allowed access for it.
-    pub fn contains(&self, region: Region) -> Option<Access> {
-        if region.start >= region.end || !self.region.contains(&region) {
+    /// maximum allowed access for it. Any empty space will result `None`.
+    pub fn contains(
+        &self,
+        addr: Address<usize, Page>,
+        length: Offset<usize, Page>,
+    ) -> Option<Access> {
+        let region = Region::new(addr, addr + length);
+        let mut access = Access::all();
+        let mut start = region.start;
+
+        if !self.region.contains(&region) {
             return None;
         }
-
-        let mut start = region.start;
-        let mut access = Access::all();
 
         for record in self.records() {
             if let Some(slice) = record.region.intersection(Region::new(start, region.end)) {
@@ -174,12 +177,10 @@ impl<const N: usize> Ledger<N> {
         None
     }
 
-    /// Check whether the existing addresses in the ledger overlap with the
+    /// Check whether the existing reserved addresses in the ledger overlap with the
     /// given region.
-    pub fn overlaps(&self, region: Region) -> bool {
-        if region.start >= region.end || !self.region.contains(&region) {
-            return false;
-        }
+    pub fn overlaps(&self, addr: Address<usize, Page>, length: Offset<usize, Page>) -> bool {
+        let region = Region::new(addr, addr + length);
 
         self.records()
             .iter()
@@ -214,14 +215,20 @@ impl<const N: usize> Ledger<N> {
         Ok(())
     }
 
-    /// Adds a new record to the ledger, potentially merging with existing records.
-    pub fn map(&mut self, region: Region, access: Access) -> Result<(), Error> {
-        if region.start >= region.end || !self.region.contains(&region) {
-            return Err(Error::InvalidRegion);
-        }
+    /// Reserve an address range from the ledger. When overlapping with an
+    /// existing record, the new access will be over-written. Conserves space by
+    /// merging the adjacent records in the ledger after the reservation has
+    /// been done.
+    pub fn map(
+        &mut self,
+        addr: Address<usize, Page>,
+        length: Offset<usize, Page>,
+        access: Access,
+    ) -> Result<(), Error> {
+        let region = Region::new(addr, addr + length);
 
-        // Clear out the space for the new record.
-        if let Err(err) = self.unmap(region) {
+        // Clear out the possibly reserved space for the new record.
+        if let Err(err) = self.unmap(addr, length) {
             return Err(err);
         }
 
@@ -330,10 +337,12 @@ impl<const N: usize> Ledger<N> {
     }
 
     /// Delete sub-regions.
-    pub fn unmap(&mut self, region: Region) -> Result<(), Error> {
-        if region.start >= region.end || !self.region.contains(&region) {
-            return Err(Error::InvalidRegion);
-        }
+    pub fn unmap(
+        &mut self,
+        addr: Address<usize, Page>,
+        length: Offset<usize, Page>,
+    ) -> Result<(), Error> {
+        let region = Region::new(addr, addr + length);
 
         let mut index = 0;
 
@@ -493,7 +502,9 @@ mod tests {
             })
             .collect::<Vec<_>>()
         {
-            ledger.map(record.region, record.access).unwrap();
+            let addr = record.region.start;
+            let length = record.region.end - record.region.start;
+            ledger.map(addr, length, record.access).unwrap();
         }
 
         println!("Maps:");
@@ -501,13 +512,11 @@ mod tests {
         println!("Region:");
         println!("({:>#08x}, {:>#08x})", expected.0 << 12, expected.1 << 12,);
 
-        assert_eq!(
-            ledger.contains(Region::new(
-                Address::new(expected.0 << 12),
-                Address::new(expected.1 << 12)
-            )),
-            expected.2
+        let access = ledger.contains(
+            Address::new(expected.0 << 12),
+            Offset::from_items(expected.1 - expected.0),
         );
+        assert_eq!(access, expected.2);
     }
 
     #[rstest::rstest]
@@ -527,7 +536,9 @@ mod tests {
             })
             .collect::<Vec<_>>()
         {
-            ledger.map(record.region, record.access).unwrap();
+            let addr = record.region.start;
+            let length = record.region.end - record.region.start;
+            ledger.map(addr, length, record.access).unwrap();
         }
 
         println!("Maps:");
@@ -535,13 +546,11 @@ mod tests {
         println!("Region:");
         println!("({:>#08x}, {:>#08x})", expected.0 << 12, expected.1 << 12,);
 
-        assert_eq!(
-            ledger.overlaps(Region::new(
-                Address::new(expected.0 << 12),
-                Address::new(expected.1 << 12)
-            )),
-            expected.2
+        let access = ledger.overlaps(
+            Address::new(expected.0 << 12),
+            Offset::from_items(expected.1 - expected.0),
         );
+        assert_eq!(access, expected.2);
     }
 
     #[rstest::rstest]
@@ -600,7 +609,9 @@ mod tests {
         trace_records(&maps);
 
         for record in maps {
-            ledger.map(record.region, record.access).unwrap();
+            let addr = record.region.start;
+            let length = record.region.end - record.region.start;
+            ledger.map(addr, length, record.access).unwrap();
         }
 
         println!("Result:");
@@ -646,7 +657,9 @@ mod tests {
         trace_regions(&unmaps);
 
         for region in unmaps {
-            ledger.unmap(region).unwrap();
+            let addr = region.start;
+            let length = region.end - region.start;
+            ledger.unmap(addr, length).unwrap();
         }
 
         println!("Result:");
@@ -689,13 +702,13 @@ mod tests {
         trace_records(&maps);
 
         for record in maps {
-            ledger.map(record.region, record.access).unwrap();
+            let addr = record.region.start;
+            let length = record.region.end - record.region.start;
+            ledger.map(addr, length, record.access).unwrap();
         }
 
         if let Some(addr) = ledger.find_free_front(length) {
-            let end = addr + length;
-            let region = Region::new(addr, end);
-            ledger.map(region, Access::empty()).unwrap();
+            ledger.map(addr, length, Access::empty()).unwrap();
         }
 
         println!("Result:");
@@ -738,13 +751,13 @@ mod tests {
         trace_records(&maps);
 
         for record in maps {
-            ledger.map(record.region, record.access).unwrap();
+            let addr = record.region.start;
+            let length = record.region.end - record.region.start;
+            ledger.map(addr, length, record.access).unwrap();
         }
 
         if let Some(addr) = ledger.find_free_back(length) {
-            let end = addr + length;
-            let region = Region::new(addr, end);
-            ledger.map(region, Access::empty()).unwrap();
+            ledger.map(addr, length, Access::empty()).unwrap();
         }
 
         println!("Result:");
