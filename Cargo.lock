@@ -22,7 +22,7 @@ checksum = "3919d8ed5e9b055f0fd725e3f4c324052df3f8c893824a5fcbffea36356abfb5"
 
 [[package]]
 name = "mmledger"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "bitflags",
  "lset",
