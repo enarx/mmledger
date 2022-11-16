@@ -228,9 +228,7 @@ impl<const N: usize> Ledger<N> {
         let region = Region::new(addr, addr + length);
 
         // Clear out the possibly reserved space for the new record.
-        if let Err(err) = self.unmap(addr, length) {
-            return Err(err);
-        }
+        self.unmap(addr, length)?;
 
         match self.records().len() {
             0 => self.insert(0, Record { region, access }).and(self.merge()),
