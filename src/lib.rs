@@ -330,12 +330,13 @@ impl<T: LedgerAccess, const N: usize> Ledger<T, N> {
             if region.start > record_start && region.end < record_end {
                 let before = Record {
                     region: Region::new(record_start, region.start),
-                    access: T::DEFAULT,
+                    access: self.records[index].access,
                 };
                 let after = Record {
                     region: Region::new(region.end, record_end),
-                    access: T::DEFAULT,
+                    access: self.records[index].access,
                 };
+
                 // Put `after` first because it will be right-shifted by `Self::commit()`.
                 self.records[index] = after;
 
