@@ -16,6 +16,7 @@ include = [
 bitflags = "1.0.4"
 lset = "0.3.0"
 primordial = "0.5.0"
+const-default = "1.0.0"
 
 [dev-dependencies]
 rstest = "0.12.0"
