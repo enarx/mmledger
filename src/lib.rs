@@ -314,13 +314,23 @@ impl<T: LedgerAccess, const N: usize> Ledger<T, N> {
             let record_start = self.records[index].region.start;
             let record_end = self.records[index].region.end;
 
-            if region.end < record_start || region.start > record_end {
+            if region.start >= record_end {
                 // Skip:
+                // [   ]   XXXXX
                 index += 1;
                 continue;
             }
 
+            if region.end <= record_start {
+                // Skip:
+                // XXXXX   [   ]
+
+                // Any remaining records are after the region.
+                return Ok(());
+            }
+
             if region.start <= record_start && region.end >= record_end {
+                // XX[XX]XX
                 self.remove(index);
                 // Jump without `index += 1` so that a left-shifted record will
                 // not be skipped:
@@ -328,6 +338,7 @@ impl<T: LedgerAccess, const N: usize> Ledger<T, N> {
             }
 
             if region.start > record_start && region.end < record_end {
+                // [   XXXXXX    ]
                 let before = Record {
                     region: Region::new(record_start, region.start),
                     access: self.records[index].access,
@@ -340,13 +351,18 @@ impl<T: LedgerAccess, const N: usize> Ledger<T, N> {
                 // Put `after` first because it will be right-shifted by `Self::commit()`.
                 self.records[index] = after;
 
+                // Any remaining records are after the region.
                 return self.insert(index, before);
             }
 
             if region.start > record_start {
+                // [  XXX]XXXX
                 self.records[index].region.end = region.start;
             } else {
+                // XXX[XXXX   ]
                 self.records[index].region.start = region.end;
+                // Any remaining records are after the region.
+                return Ok(());
             }
 
             index += 1;
