@@ -72,7 +72,8 @@ impl<T: LedgerAccess, const N: usize> Debug for Ledger<T, N> {
         write!(f, "Ledger {{ records: ")?;
         f.debug_list()
             .entries(self.records[..self.tail].iter())
-            .finish()
+            .finish()?;
+        write!(f, " }}")
     }
 }
 
@@ -411,10 +412,21 @@ mod tests {
 
     const N: Access = Access::DEFAULT;
     const R: Access = Access::READ;
+    const W: Access = Access::WRITE;
 
     const FULL: Record<Access> = Record {
         region: Region::new(Address::new(0), Address::new(0x10000)),
         access: Access::DEFAULT,
+    };
+
+    const LOWER_HALF_R: Record<Access> = Record {
+        region: Region::new(Address::new(0), Address::new(0x8000)),
+        access: Access::READ,
+    };
+
+    const UPPER_HALF_W: Record<Access> = Record {
+        region: Region::new(Address::new(0x8000), Address::new(0x10000)),
+        access: Access::WRITE,
     };
 
     const EMPTY_LEDGER: Ledger<Access, 5> = Ledger {
@@ -433,6 +445,18 @@ mod tests {
         ],
         region: Region::new(Address::new(0x0000), Address::new(0x10000)),
         tail: 1,
+    };
+
+    const MIXED_LEDGER: Ledger<Access, 5> = Ledger {
+        records: [
+            LOWER_HALF_R,
+            UPPER_HALF_W,
+            Record::DEFAULT,
+            Record::DEFAULT,
+            Record::DEFAULT,
+        ],
+        region: Region::new(Address::new(0x0000), Address::new(0x10000)),
+        tail: 2,
     };
 
     fn trace_records(records: &[Record<Access>]) {
@@ -665,6 +689,7 @@ mod tests {
         let mut ledger = FULL_LEDGER.clone();
         assert_eq!(ledger.records(), &[FULL]);
 
+        println!("{:#?}", &ledger);
         println!("Unmaps:");
         trace_regions(&unmaps);
 
@@ -675,6 +700,45 @@ mod tests {
         }
 
         println!("Result:");
+        println!("{:#?}", &ledger);
+        trace_assert_records_eq(ledger.records(), &expected);
+    }
+
+    #[rstest::rstest]
+    #[case(&[(0x8, 0x10)], &[(0x0, 0x8, R)])] // start
+    #[case(&[(0x0, 0x8)], &[(0x8, 0x10, W)])] // end
+    #[case(&[(0x8, 0x9)], &[(0x0, 0x8, R), (0x9, 0x10, W)])] // split
+    #[case(&[(0x8, 0x9), (0x8, 0x10)], &[(0x0, 0x8, R)])] // split and end
+    #[case(&[(0x7, 0x9)], &[(0x0, 0x7, R), (0x9, 0x10, W)])] // split
+    fn unmap_mixed(#[case] unmaps: &[(usize, usize)], #[case] expected: &[(usize, usize, Access)]) {
+        let unmaps = unmaps
+            .iter()
+            .cloned()
+            .map(|record| Region::new(Address::new(record.0 << 12), Address::new(record.1 << 12)))
+            .collect::<Vec<_>>();
+
+        let expected = expected
+            .iter()
+            .cloned()
+            .map(|record| Record {
+                region: Region::new(Address::new(record.0 << 12), Address::new(record.1 << 12)),
+                access: record.2,
+            })
+            .collect::<Vec<_>>();
+
+        let mut ledger = MIXED_LEDGER.clone();
+
+        println!("Unmaps:");
+        trace_regions(&unmaps);
+
+        for region in unmaps {
+            let addr = region.start;
+            let length = region.end - region.start;
+            ledger.unmap(addr, length).unwrap();
+        }
+
+        println!("Result:");
+        println!("{:#?}", &ledger);
         trace_assert_records_eq(ledger.records(), &expected);
     }
 
