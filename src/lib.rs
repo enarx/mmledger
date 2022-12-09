@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! A ledger for memory mappings.
 
 #![cfg_attr(not(test), no_std)]
