@@ -483,7 +483,7 @@ mod tests {
                     "[{:>#08x}, {:>#08x}, {}] != [{:>#08x}, {:>#08x}, {}]",
                     a[i].region.start,
                     a[i].region.end,
-                    b[i].access,
+                    a[i].access,
                     b[i].region.start,
                     b[i].region.end,
                     b[i].access
