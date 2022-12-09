@@ -5,62 +5,20 @@
 #![deny(missing_docs)]
 #![forbid(unsafe_code)]
 
-use core::fmt;
+use core::fmt::{Debug, Formatter};
+use core::ops::BitAndAssign;
 
+use const_default::ConstDefault;
 use lset::Contains;
 use primordial::{Address, Offset, Page};
 
 /// A region of memory.
 pub type Region = lset::Line<Address<usize, Page>>;
 
-bitflags::bitflags! {
-    /// Memory access permissions.
-    #[derive(Default)]
-    #[repr(transparent)]
-    pub struct Access: usize {
-        /// Read access
-        const READ = 1 << 0;
-
-        /// Write access
-        const WRITE = 1 << 0;
-
-        /// Execute access
-        const EXECUTE = 1 << 0;
-    }
-}
-
-impl Access {
-    /// Creates a record for these permissions and the given region.
-    pub const fn record(self, region: Region) -> Record {
-        Record {
-            region,
-            access: self,
-        }
-    }
-}
-
-impl fmt::Display for Access {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(
-            f,
-            "{}{}{}",
-            if self.contains(Access::READ) {
-                'r'
-            } else {
-                '-'
-            },
-            if self.contains(Access::WRITE) {
-                'w'
-            } else {
-                '-'
-            },
-            if self.contains(Access::EXECUTE) {
-                'x'
-            } else {
-                '-'
-            }
-        )
-    }
+/// An access type for a region of memory.
+pub trait LedgerAccess: Sized + ConstDefault + Default + Eq + BitAndAssign + Copy + Debug {
+    /// The access type for a region of memory with all permissions.
+    const ALL: Self;
 }
 
 /// A ledger record.
@@ -71,18 +29,18 @@ impl fmt::Display for Access {
 #[cfg_attr(target_pointer_width = "32", repr(C, align(16)))]
 #[cfg_attr(target_pointer_width = "64", repr(C, align(32)))]
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
-pub struct Record {
+pub struct Record<T: LedgerAccess> {
     /// The covered region of memory.
     pub region: Region,
 
     /// The access permissions.
-    pub access: Access,
+    pub access: T,
 }
 
-impl Record {
-    const EMPTY: Record = Record {
+impl<T: LedgerAccess> ConstDefault for Record<T> {
+    const DEFAULT: Self = Record {
         region: Region::new(Address::NULL, Address::NULL),
-        access: Access::empty(),
+        access: T::DEFAULT,
     };
 }
 
@@ -97,28 +55,37 @@ pub enum Error {
 }
 
 /// A virtual memory map ledger.
-#[derive(Clone, Debug)]
-pub struct Ledger<const N: usize> {
+#[derive(Clone)]
+pub struct Ledger<T: LedgerAccess, const N: usize> {
     /// Memory records stored into the ledger.
-    records: [Record; N],
+    records: [Record<T>; N],
     /// Address region that the ledger maintains.
     region: Region,
     /// Tail of the records currently in the ledger.
     tail: usize,
 }
 
-impl<const N: usize> Ledger<N> {
+impl<T: LedgerAccess, const N: usize> Debug for Ledger<T, N> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
+        write!(f, "Ledger {{ records: ")?;
+        f.debug_list()
+            .entries(self.records[..self.tail].iter())
+            .finish()
+    }
+}
+
+impl<T: LedgerAccess, const N: usize> Ledger<T, N> {
     /// Remove the record at index.
     fn remove(&mut self, index: usize) {
         assert!(self.tail > index);
 
-        self.records[index] = Record::EMPTY;
+        self.records[index] = Record::DEFAULT;
         self.records[index..].rotate_left(1);
         self.tail -= 1;
     }
 
     /// Insert a record at the index, shifting later records right.
-    fn insert(&mut self, index: usize, record: Record) -> Result<(), Error> {
+    fn insert(&mut self, index: usize, record: Record<T>) -> Result<(), Error> {
         assert!(self.tail <= self.records.len());
         assert!(self.tail == self.records().len());
         assert!(self.tail >= index);
@@ -136,9 +103,9 @@ impl<const N: usize> Ledger<N> {
 
     /// Create a new instance. Make sure that `region.start < region.end`,
     /// because otherwise the ledger will exhibit undefined behaviour.
-    pub const fn new(region: Region) -> Self {
+    pub fn new(region: Region) -> Self {
         Self {
-            records: [Record::EMPTY; N],
+            records: [Record::<T>::DEFAULT; N],
             region,
             tail: 0,
         }
@@ -146,13 +113,9 @@ impl<const N: usize> Ledger<N> {
 
     /// Check whether the ledger contains the given region, and return the
     /// maximum allowed access for it. Any empty space will result `None`.
-    pub fn contains(
-        &self,
-        addr: Address<usize, Page>,
-        length: Offset<usize, Page>,
-    ) -> Option<Access> {
+    pub fn contains(&self, addr: Address<usize, Page>, length: Offset<usize, Page>) -> Option<T> {
         let region = Region::new(addr, addr + length);
-        let mut access = Access::all();
+        let mut access = T::ALL;
         let mut start = region.start;
 
         if !self.region.contains(&region) {
@@ -188,14 +151,14 @@ impl<const N: usize> Ledger<N> {
     }
 
     /// Get an immutable view of the records.
-    pub fn records(&self) -> &[Record] {
+    pub fn records(&self) -> &[Record<T>] {
         &self.records[..self.tail]
     }
 
     /// Get a mutable view of the records.
     ///
     /// This function MUST NOT be public.
-    fn records_mut(&mut self) -> &mut [Record] {
+    fn records_mut(&mut self) -> &mut [Record<T>] {
         &mut self.records[..self.tail]
     }
 
@@ -223,7 +186,7 @@ impl<const N: usize> Ledger<N> {
         &mut self,
         addr: Address<usize, Page>,
         length: Offset<usize, Page>,
-        access: Access,
+        access: T,
     ) -> Result<(), Error> {
         let region = Region::new(addr, addr + length);
 
@@ -362,13 +325,13 @@ impl<const N: usize> Ledger<N> {
             }
 
             if region.start > record_start && region.end < record_end {
-                let before: Record = Record {
+                let before = Record {
                     region: Region::new(record_start, region.start),
-                    access: Access::empty(),
+                    access: T::DEFAULT,
                 };
-                let after: Record = Record {
+                let after = Record {
                     region: Region::new(region.end, record_end),
-                    access: Access::empty(),
+                    access: T::DEFAULT,
                 };
                 // Put `after` first because it will be right-shifted by `Self::commit()`.
                 self.records[index] = after;
@@ -394,34 +357,83 @@ mod tests {
     use super::*;
 
     use core::cmp::max;
+    use core::fmt;
 
-    const N: Access = Access::empty();
+    bitflags::bitflags! {
+        /// Memory access permissions.
+        #[derive(Default)]
+        #[repr(transparent)]
+        pub struct Access: usize {
+            /// Access::READ access
+            const READ = 1 << 0;
+
+            /// Access::WRITE access
+            const WRITE = 1 << 1;
+
+            /// Execute access
+            const EXECUTE = 1 << 2;
+        }
+    }
+
+    impl ConstDefault for Access {
+        const DEFAULT: Self = Self::empty();
+    }
+
+    impl LedgerAccess for Access {
+        const ALL: Self = Self::all();
+    }
+
+    impl fmt::Display for Access {
+        fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+            write!(
+                f,
+                "{}{}{}",
+                if self.contains(Access::READ) {
+                    'r'
+                } else {
+                    '-'
+                },
+                if self.contains(Access::WRITE) {
+                    'w'
+                } else {
+                    '-'
+                },
+                if self.contains(Access::EXECUTE) {
+                    'x'
+                } else {
+                    '-'
+                }
+            )
+        }
+    }
+
+    const N: Access = Access::DEFAULT;
     const R: Access = Access::READ;
 
-    const FULL: Record = Record {
+    const FULL: Record<Access> = Record {
         region: Region::new(Address::new(0), Address::new(0x10000)),
-        access: Access::empty(),
+        access: Access::DEFAULT,
     };
 
-    const EMPTY_LEDGER: Ledger<5> = Ledger {
-        records: [Record::EMPTY; 5],
+    const EMPTY_LEDGER: Ledger<Access, 5> = Ledger {
+        records: [Record::DEFAULT; 5],
         region: Region::new(Address::new(0x0000), Address::new(0x10000)),
         tail: 0,
     };
 
-    const FULL_LEDGER: Ledger<5> = Ledger {
+    const FULL_LEDGER: Ledger<Access, 5> = Ledger {
         records: [
             FULL,
-            Record::EMPTY,
-            Record::EMPTY,
-            Record::EMPTY,
-            Record::EMPTY,
+            Record::DEFAULT,
+            Record::DEFAULT,
+            Record::DEFAULT,
+            Record::DEFAULT,
         ],
         region: Region::new(Address::new(0x0000), Address::new(0x10000)),
         tail: 1,
     };
 
-    fn trace_records(records: &[Record]) {
+    fn trace_records(records: &[Record<Access>]) {
         for record in records {
             println!(
                 "[{:>#08x}, {:>#08x} {}]",
@@ -436,7 +448,7 @@ mod tests {
         }
     }
 
-    fn trace_assert_records_eq(a: &[Record], b: &[Record]) {
+    fn trace_assert_records_eq(a: &[Record<Access>], b: &[Record<Access>]) {
         let max = max(a.len(), b.len());
         let mut equal = true;
 
@@ -765,7 +777,7 @@ mod tests {
     #[test]
     fn record_size_align() {
         use core::mem::{align_of, size_of};
-        assert_eq!(size_of::<Record>(), size_of::<usize>() * 4);
-        assert_eq!(align_of::<Record>(), size_of::<Record>());
+        assert_eq!(size_of::<Record<Access>>(), size_of::<usize>() * 4);
+        assert_eq!(align_of::<Record<Access>>(), size_of::<Record<Access>>());
     }
 }
