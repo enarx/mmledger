@@ -308,6 +308,16 @@ impl<T: LedgerAccess, const N: usize> Ledger<T, N> {
         addr: Address<usize, Page>,
         length: Offset<usize, Page>,
     ) -> Result<(), Error> {
+        self.unmap_with(addr, length, |_| {})
+    }
+
+    /// Delete sub-regions and call a function on each deleted region.
+    pub fn unmap_with(
+        &mut self,
+        addr: Address<usize, Page>,
+        length: Offset<usize, Page>,
+        mut f: impl FnMut(&Record<T>),
+    ) -> Result<(), Error> {
         let region: Region = Span::new(addr, length).into();
 
         let mut index = 0;
@@ -337,6 +347,7 @@ impl<T: LedgerAccess, const N: usize> Ledger<T, N> {
                 (true, true, false, false) => {
                     // XX[XX]XX
                     // The record is fully contained in the region.
+                    f(&self.records[index]);
                     self.remove(index);
                     // Jump without `index += 1` so that a left-shifted record will
                     // not be skipped:
@@ -353,7 +364,10 @@ impl<T: LedgerAccess, const N: usize> Ledger<T, N> {
                         region: Region::new(region.end, record_end),
                         access: self.records[index].access,
                     };
-
+                    f(&Record {
+                        region,
+                        access: self.records[index].access,
+                    });
                     // Put `after` first because it will be right-shifted by `Self::commit()`.
                     self.records[index] = after;
 
@@ -362,10 +376,18 @@ impl<T: LedgerAccess, const N: usize> Ledger<T, N> {
                 }
                 (false, true, false, false) => {
                     // [  XXX]XXXX
+                    f(&Record {
+                        region: Region::new(region.start, record_end),
+                        access: self.records[index].access,
+                    });
                     self.records[index].region.end = region.start;
                 }
                 (true, false, false, false) => {
                     // XXX[XXXX   ]
+                    f(&Record {
+                        region: Region::new(record_start, region.end),
+                        access: self.records[index].access,
+                    });
                     self.records[index].region.start = region.end;
                     // Any remaining records are after the region.
                     return Ok(());
@@ -668,22 +690,26 @@ mod tests {
     }
 
     #[rstest::rstest]
-    #[case(&[(0x0, 0x3), (0x6, 0xa), (0xd, 0x10)], &[(0x3, 0x6, R), (0xa, 0xd, R)])] // split
-    #[case(&[(0x0, 0x3), (0x6, 0xa), (0xd, 0x10), (0x1, 0xf)], &[])] // clear
-    #[case(&[(0x0, 0x3), (0x6, 0xa), (0xd, 0x10), (0x0, 0x1)], &[(0x3, 0x6, R), (0xa, 0xd, R)])] // noop
-    #[case(&[(0x0, 0x3), (0x6, 0xa), (0xd, 0x10), (0x7, 0x8)], &[(0x3, 0x6, R), (0xa, 0xd, R)])] // noop
-    #[case(&[(0x0, 0x3), (0x6, 0xa), (0xd, 0x10), (0xe, 0xf)], &[(0x3, 0x6, R), (0xa, 0xd, R)])] // noop
-    #[case(&[(0x0, 0x3), (0x6, 0xa), (0xd, 0x10), (0x3, 0x6)], &[(0xa, 0xd, R)])] // remove
-    #[case(&[(0x0, 0x3), (0x6, 0xa), (0xd, 0x10), (0xa, 0xd)], &[(0x3, 0x6, R)])] // remove
-    #[case(&[(0x0, 0x3), (0x6, 0xa), (0xd, 0x10), (0x2, 0x7)], &[(0xa, 0xd, R)])] // remove oversized
-    #[case(&[(0x0, 0x3), (0x6, 0xa), (0xd, 0x10), (0x9, 0xe)], &[(0x3, 0x6, R)])] // remove oversized
-    #[case(&[(0x0, 0x3), (0x6, 0xa), (0xd, 0x10), (0x2, 0x4)], &[(0x4, 0x6, R), (0xa, 0xd, R)])] // overlap before
-    #[case(&[(0x0, 0x3), (0x6, 0xa), (0xd, 0x10), (0x9, 0xb)], &[(0x3, 0x6, R), (0xb, 0xd, R)])] // overlap before
-    #[case(&[(0x0, 0x3), (0x6, 0xa), (0xd, 0x10), (0x5, 0x7)], &[(0x3, 0x5, R), (0xa, 0xd, R)])] // overlap after
-    #[case(&[(0x0, 0x3), (0x6, 0xa), (0xd, 0x10), (0xc, 0xe)], &[(0x3, 0x6, R), (0xa, 0xc, R)])] // overlap after
-    #[case(&[(0x0, 0x3), (0x6, 0xa), (0xd, 0x10), (0x4, 0x5)], &[(0x3, 0x4, R), (0x5, 0x6, R), (0xa, 0xd, R)])] // split
-    #[case(&[(0x0, 0x3), (0x6, 0xa), (0xd, 0x10), (0xb, 0xc)], &[(0x3, 0x6, R), (0xa, 0xb, R), (0xc, 0xd, R)])] // split
-    fn unmap(#[case] unmaps: &[(usize, usize)], #[case] expected: &[(usize, usize, Access)]) {
+    #[case(&[(0x0, 0x3), (0x6, 0xa), (0xd, 0x10)], &[(0x3, 0x6, R), (0xa, 0xd, R)], 3)] // split
+    #[case(&[(0x0, 0x3), (0x6, 0xa), (0xd, 0x10), (0x1, 0xf)], &[], 5)] // clear
+    #[case(&[(0x0, 0x3), (0x6, 0xa), (0xd, 0x10), (0x0, 0x1)], &[(0x3, 0x6, R), (0xa, 0xd, R)], 3)] // noop
+    #[case(&[(0x0, 0x3), (0x6, 0xa), (0xd, 0x10), (0x7, 0x8)], &[(0x3, 0x6, R), (0xa, 0xd, R)], 3)] // noop
+    #[case(&[(0x0, 0x3), (0x6, 0xa), (0xd, 0x10), (0xe, 0xf)], &[(0x3, 0x6, R), (0xa, 0xd, R)], 3)] // noop
+    #[case(&[(0x0, 0x3), (0x6, 0xa), (0xd, 0x10), (0x3, 0x6)], &[(0xa, 0xd, R)], 4)] // remove
+    #[case(&[(0x0, 0x3), (0x6, 0xa), (0xd, 0x10), (0xa, 0xd)], &[(0x3, 0x6, R)], 4)] // remove
+    #[case(&[(0x0, 0x3), (0x6, 0xa), (0xd, 0x10), (0x2, 0x7)], &[(0xa, 0xd, R)], 4)] // remove oversized
+    #[case(&[(0x0, 0x3), (0x6, 0xa), (0xd, 0x10), (0x9, 0xe)], &[(0x3, 0x6, R)], 4)] // remove oversized
+    #[case(&[(0x0, 0x3), (0x6, 0xa), (0xd, 0x10), (0x2, 0x4)], &[(0x4, 0x6, R), (0xa, 0xd, R)], 4)] // overlap before
+    #[case(&[(0x0, 0x3), (0x6, 0xa), (0xd, 0x10), (0x9, 0xb)], &[(0x3, 0x6, R), (0xb, 0xd, R)], 4)] // overlap before
+    #[case(&[(0x0, 0x3), (0x6, 0xa), (0xd, 0x10), (0x5, 0x7)], &[(0x3, 0x5, R), (0xa, 0xd, R)], 4)] // overlap after
+    #[case(&[(0x0, 0x3), (0x6, 0xa), (0xd, 0x10), (0xc, 0xe)], &[(0x3, 0x6, R), (0xa, 0xc, R)], 4)] // overlap after
+    #[case(&[(0x0, 0x3), (0x6, 0xa), (0xd, 0x10), (0x4, 0x5)], &[(0x3, 0x4, R), (0x5, 0x6, R), (0xa, 0xd, R)], 4)] // split
+    #[case(&[(0x0, 0x3), (0x6, 0xa), (0xd, 0x10), (0xb, 0xc)], &[(0x3, 0x6, R), (0xa, 0xb, R), (0xc, 0xd, R)], 4)] // split
+    fn unmap(
+        #[case] unmaps: &[(usize, usize)],
+        #[case] expected: &[(usize, usize, Access)],
+        #[case] expected_unmapped: usize,
+    ) {
         let unmaps = regions_from_rstest(unmaps);
         let expected = records_from_rstest(expected);
 
@@ -694,24 +720,40 @@ mod tests {
         println!("Unmaps:");
         trace_regions(&unmaps);
 
+        let mut unmapped = 0;
+
         for region in unmaps {
             let addr = region.start;
             let length = region.end - region.start;
-            ledger.unmap(addr, length).unwrap();
+            ledger
+                .unmap_with(addr, length, |record| {
+                    unmapped += 1;
+                    println!(
+                        "Unmapped [{:>#08x}, {:>#08x}]",
+                        record.region.start, record.region.end
+                    );
+                })
+                .unwrap();
         }
 
         println!("Result:");
         println!("{:#?}", &ledger);
         trace_assert_records_eq(ledger.records(), &expected);
+        assert_eq!(unmapped, expected_unmapped);
     }
 
     #[rstest::rstest]
-    #[case(&[(0x8, 0x10)], &[(0x0, 0x8, R)])] // start
-    #[case(&[(0x0, 0x8)], &[(0x8, 0x10, W)])] // end
-    #[case(&[(0x8, 0x9)], &[(0x0, 0x8, R), (0x9, 0x10, W)])] // split
-    #[case(&[(0x8, 0x9), (0x8, 0x10)], &[(0x0, 0x8, R)])] // split and end
-    #[case(&[(0x7, 0x9)], &[(0x0, 0x7, R), (0x9, 0x10, W)])] // split
-    fn unmap_mixed(#[case] unmaps: &[(usize, usize)], #[case] expected: &[(usize, usize, Access)]) {
+    #[case(&[(0x8, 0x10)], &[(0x0, 0x8, R)], 1)] // start
+    #[case(&[(0x0, 0x8)], &[(0x8, 0x10, W)], 1)] // end
+    #[case(&[(0x8, 0x9)], &[(0x0, 0x8, R), (0x9, 0x10, W)], 1)] // split
+    #[case(&[(0x8, 0x9), (0x8, 0x10)], &[(0x0, 0x8, R)], 2)] // split and end
+    #[case(&[(0x7, 0x9)], &[(0x0, 0x7, R), (0x9, 0x10, W)], 2)] // split
+    #[case(&[(0x7, 0x9), (0x0, 0x10)], &[], 4)] // empty
+    fn unmap_mixed(
+        #[case] unmaps: &[(usize, usize)],
+        #[case] expected: &[(usize, usize, Access)],
+        #[case] expected_unmapped: usize,
+    ) {
         let unmaps = regions_from_rstest(unmaps);
         let expected = records_from_rstest(expected);
 
@@ -720,15 +762,26 @@ mod tests {
         println!("Unmaps:");
         trace_regions(&unmaps);
 
+        let mut unmapped = 0;
+
         for region in unmaps {
             let addr = region.start;
             let length = region.end - region.start;
-            ledger.unmap(addr, length).unwrap();
+            ledger
+                .unmap_with(addr, length, |record| {
+                    unmapped += 1;
+                    println!(
+                        "Unmapped [{:>#08x}, {:>#08x}]",
+                        record.region.start, record.region.end
+                    );
+                })
+                .unwrap();
         }
 
         println!("Result:");
         println!("{:#?}", &ledger);
         trace_assert_records_eq(ledger.records(), &expected);
+        assert_eq!(unmapped, expected_unmapped);
     }
 
     #[rstest::rstest]
