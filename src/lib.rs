@@ -476,6 +476,37 @@ mod tests {
         tail: 2,
     };
 
+    fn records_from_rstest(maps: &[(usize, usize, Access)]) -> Vec<Record<Access>> {
+        let maps = maps
+            .iter()
+            .cloned()
+            .map(|record| Record {
+                region: Region::new(Address::new(record.0 << 12), Address::new(record.1 << 12)),
+                access: record.2,
+            })
+            .collect::<Vec<_>>();
+        maps
+    }
+
+    fn ledger_map_from_rstest<const N: usize>(
+        ledger: &mut Ledger<Access, N>,
+        maps: &[(usize, usize, Access)],
+    ) {
+        maps.iter().for_each(|r| {
+            let span: Span = Region::new(Address::new(r.0 << 12), Address::new(r.1 << 12)).into();
+            ledger.map(span.start, span.count, r.2).unwrap();
+        });
+    }
+
+    fn regions_from_rstest(maps: &[(usize, usize)]) -> Vec<Region> {
+        let maps = maps
+            .iter()
+            .cloned()
+            .map(|record| Region::new(Address::new(record.0 << 12), Address::new(record.1 << 12)))
+            .collect::<Vec<_>>();
+        maps
+    }
+
     fn trace_records(records: &[Record<Access>]) {
         for record in records {
             println!(
@@ -546,19 +577,7 @@ mod tests {
         #[case] expected: (usize, usize, Option<Access>),
     ) {
         let mut ledger = EMPTY_LEDGER.clone();
-        for record in maps
-            .iter()
-            .cloned()
-            .map(|r| Record {
-                region: Region::new(Address::new(r.0 << 12), Address::new(r.1 << 12)),
-                access: r.2,
-            })
-            .collect::<Vec<_>>()
-        {
-            let addr = record.region.start;
-            let length = record.region.end - record.region.start;
-            ledger.map(addr, length, record.access).unwrap();
-        }
+        ledger_map_from_rstest(&mut ledger, maps);
 
         println!("Maps:");
         trace_records(&ledger.records);
@@ -580,19 +599,7 @@ mod tests {
     #[case(&[(0x3, 0x6, N), (0x6, 0xa, R), (0xa, 0xd, N)], (0x2, 0x3, false))]
     fn overlaps(#[case] maps: &[(usize, usize, Access)], #[case] expected: (usize, usize, bool)) {
         let mut ledger = EMPTY_LEDGER.clone();
-        for record in maps
-            .iter()
-            .cloned()
-            .map(|r| Record {
-                region: Region::new(Address::new(r.0 << 12), Address::new(r.1 << 12)),
-                access: r.2,
-            })
-            .collect::<Vec<_>>()
-        {
-            let addr = record.region.start;
-            let length = record.region.end - record.region.start;
-            ledger.map(addr, length, record.access).unwrap();
-        }
+        ledger_map_from_rstest(&mut ledger, maps);
 
         println!("Maps:");
         trace_records(&ledger.records);
@@ -638,34 +645,13 @@ mod tests {
     #[case(&[(0x3, 0x6, N), (0xa, 0xd, N), (0x5, 0x7, R)], &[(0x3, 0x5, N), (0x5, 0x7, R), (0xa, 0xd, N)])] // overlap after
     #[case(&[(0x3, 0x6, N), (0xa, 0xd, N), (0xc, 0xe, R)], &[(0x3, 0x6, N), (0xa, 0xc, N), (0xc, 0xe, R)])] // overlap after
     fn map(#[case] maps: &[(usize, usize, Access)], #[case] expected: &[(usize, usize, Access)]) {
-        let maps = maps
-            .iter()
-            .cloned()
-            .map(|record| Record {
-                region: Region::new(Address::new(record.0 << 12), Address::new(record.1 << 12)),
-                access: record.2,
-            })
-            .collect::<Vec<_>>();
-
-        let expected = expected
-            .iter()
-            .cloned()
-            .map(|record| Record {
-                region: Region::new(Address::new(record.0 << 12), Address::new(record.1 << 12)),
-                access: record.2,
-            })
-            .collect::<Vec<_>>();
-
         let mut ledger = EMPTY_LEDGER.clone();
+        ledger_map_from_rstest(&mut ledger, maps);
+
+        let expected = records_from_rstest(expected);
 
         println!("Maps:");
-        trace_records(&maps);
-
-        for record in maps {
-            let addr = record.region.start;
-            let length = record.region.end - record.region.start;
-            ledger.map(addr, length, record.access).unwrap();
-        }
+        trace_records(&ledger.records);
 
         println!("Result:");
         trace_assert_records_eq(ledger.records(), &expected);
@@ -688,20 +674,8 @@ mod tests {
     #[case(&[(0x0, 0x3), (0x6, 0xa), (0xd, 0x10), (0x4, 0x5)], &[(0x3, 0x4, R), (0x5, 0x6, R), (0xa, 0xd, R)])] // split
     #[case(&[(0x0, 0x3), (0x6, 0xa), (0xd, 0x10), (0xb, 0xc)], &[(0x3, 0x6, R), (0xa, 0xb, R), (0xc, 0xd, R)])] // split
     fn unmap(#[case] unmaps: &[(usize, usize)], #[case] expected: &[(usize, usize, Access)]) {
-        let unmaps = unmaps
-            .iter()
-            .cloned()
-            .map(|record| Region::new(Address::new(record.0 << 12), Address::new(record.1 << 12)))
-            .collect::<Vec<_>>();
-
-        let expected = expected
-            .iter()
-            .cloned()
-            .map(|record| Record {
-                region: Region::new(Address::new(record.0 << 12), Address::new(record.1 << 12)),
-                access: record.2,
-            })
-            .collect::<Vec<_>>();
+        let unmaps = regions_from_rstest(unmaps);
+        let expected = records_from_rstest(expected);
 
         let mut ledger = FULL_LEDGER.clone();
         assert_eq!(ledger.records(), &[FULL]);
@@ -728,20 +702,8 @@ mod tests {
     #[case(&[(0x8, 0x9), (0x8, 0x10)], &[(0x0, 0x8, R)])] // split and end
     #[case(&[(0x7, 0x9)], &[(0x0, 0x7, R), (0x9, 0x10, W)])] // split
     fn unmap_mixed(#[case] unmaps: &[(usize, usize)], #[case] expected: &[(usize, usize, Access)]) {
-        let unmaps = unmaps
-            .iter()
-            .cloned()
-            .map(|record| Region::new(Address::new(record.0 << 12), Address::new(record.1 << 12)))
-            .collect::<Vec<_>>();
-
-        let expected = expected
-            .iter()
-            .cloned()
-            .map(|record| Record {
-                region: Region::new(Address::new(record.0 << 12), Address::new(record.1 << 12)),
-                access: record.2,
-            })
-            .collect::<Vec<_>>();
+        let unmaps = regions_from_rstest(unmaps);
+        let expected = records_from_rstest(expected);
 
         let mut ledger = MIXED_LEDGER.clone();
 
@@ -771,34 +733,14 @@ mod tests {
         #[case] expected: &[(usize, usize, Access)],
     ) {
         let length = Offset::from_items(length);
-        let maps = maps
-            .iter()
-            .cloned()
-            .map(|record| Record {
-                region: Region::new(Address::new(record.0 << 12), Address::new(record.1 << 12)),
-                access: record.2,
-            })
-            .collect::<Vec<_>>();
-        let expected = expected
-            .iter()
-            .cloned()
-            .map(|record| Record {
-                region: Region::new(Address::new(record.0 << 12), Address::new(record.1 << 12)),
-                access: record.2,
-            })
-            .collect::<Vec<_>>();
-
         let mut ledger = EMPTY_LEDGER.clone();
+        ledger_map_from_rstest(&mut ledger, maps);
+
+        let expected = records_from_rstest(expected);
 
         println!("Length: {}", length);
         println!("Maps:");
-        trace_records(&maps);
-
-        for record in maps {
-            let addr = record.region.start;
-            let length = record.region.end - record.region.start;
-            ledger.map(addr, length, record.access).unwrap();
-        }
+        trace_records(&ledger.records);
 
         if let Some(addr) = ledger.find_free_front(length) {
             ledger.map(addr, length, Access::empty()).unwrap();
@@ -820,34 +762,13 @@ mod tests {
         #[case] expected: &[(usize, usize, Access)],
     ) {
         let length = Offset::from_items(length);
-        let maps = maps
-            .iter()
-            .cloned()
-            .map(|record| Record {
-                region: Region::new(Address::new(record.0 << 12), Address::new(record.1 << 12)),
-                access: record.2,
-            })
-            .collect::<Vec<_>>();
-        let expected = expected
-            .iter()
-            .cloned()
-            .map(|record| Record {
-                region: Region::new(Address::new(record.0 << 12), Address::new(record.1 << 12)),
-                access: record.2,
-            })
-            .collect::<Vec<_>>();
-
         let mut ledger = EMPTY_LEDGER.clone();
+        ledger_map_from_rstest(&mut ledger, maps);
+        let expected = records_from_rstest(expected);
 
         println!("Length: {}", length);
         println!("Maps:");
-        trace_records(&maps);
-
-        for record in maps {
-            let addr = record.region.start;
-            let length = record.region.end - record.region.start;
-            ledger.map(addr, length, record.access).unwrap();
-        }
+        trace_records(&ledger.records);
 
         if let Some(addr) = ledger.find_free_back(length) {
             ledger.map(addr, length, Access::empty()).unwrap();
