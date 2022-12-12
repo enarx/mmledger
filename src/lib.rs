@@ -16,6 +16,8 @@ use primordial::{Address, Offset, Page};
 
 /// A region of memory.
 pub type Region = lset::Line<Address<usize, Page>>;
+/// A span of memory.
+pub type Span = lset::Span<Address<usize, Page>, Offset<usize, Page>>;
 
 /// An access type for a region of memory.
 pub trait LedgerAccess: Sized + ConstDefault + Default + Eq + BitAndAssign + Copy + Debug {
@@ -104,9 +106,9 @@ impl<T: LedgerAccess, const N: usize> Ledger<T, N> {
         Ok(())
     }
 
-    /// Create a new instance. Make sure that `region.start < region.end`,
-    /// because otherwise the ledger will exhibit undefined behaviour.
-    pub fn new(region: Region) -> Self {
+    /// Create a new instance.
+    pub fn new(addr: Address<usize, Page>, length: Offset<usize, Page>) -> Self {
+        let region = Span::new(addr, length).into();
         Self {
             records: [Record::<T>::DEFAULT; N],
             region,
@@ -117,7 +119,7 @@ impl<T: LedgerAccess, const N: usize> Ledger<T, N> {
     /// Check whether the ledger contains the given region, and return the
     /// maximum allowed access for it. Any empty space will result `None`.
     pub fn contains(&self, addr: Address<usize, Page>, length: Offset<usize, Page>) -> Option<T> {
-        let region = Region::new(addr, addr + length);
+        let region: Region = Span::new(addr, length).into();
         let mut access = T::ALL;
         let mut start = region.start;
 
@@ -146,7 +148,7 @@ impl<T: LedgerAccess, const N: usize> Ledger<T, N> {
     /// Check whether the existing reserved addresses in the ledger overlap with the
     /// given region.
     pub fn overlaps(&self, addr: Address<usize, Page>, length: Offset<usize, Page>) -> bool {
-        let region = Region::new(addr, addr + length);
+        let region: Region = Span::new(addr, length).into();
 
         self.records()
             .iter()
@@ -191,7 +193,7 @@ impl<T: LedgerAccess, const N: usize> Ledger<T, N> {
         length: Offset<usize, Page>,
         access: T,
     ) -> Result<(), Error> {
-        let region = Region::new(addr, addr + length);
+        let region = Span::new(addr, length).into();
 
         // Clear out the possibly reserved space for the new record.
         self.unmap(addr, length)?;
@@ -306,7 +308,7 @@ impl<T: LedgerAccess, const N: usize> Ledger<T, N> {
         addr: Address<usize, Page>,
         length: Offset<usize, Page>,
     ) -> Result<(), Error> {
-        let region = Region::new(addr, addr + length);
+        let region: Region = Span::new(addr, length).into();
 
         let mut index = 0;
 
