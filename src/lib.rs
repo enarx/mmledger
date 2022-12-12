@@ -236,6 +236,158 @@ impl<T: LedgerAccess, const N: usize> Ledger<T, N> {
         }
     }
 
+    /// Change the access of a region in the ledger.
+    ///
+    /// This might split the existing record, or merge records after the change.
+    /// An additional function is called on every changed region requesting the
+    /// access change.
+    pub fn protect_with(
+        &mut self,
+        addr: Address<usize, Page>,
+        length: Offset<usize, Page>,
+        mut func: impl FnMut(&Record<T>) -> T,
+    ) -> Result<(), Error> {
+        let region = Region::new(addr, addr + length);
+
+        let mut index = 0;
+
+        while index < self.tail {
+            let record_start = self.records[index].region.start;
+            let record_end = self.records[index].region.end;
+
+            match (
+                (region.start <= record_start),
+                (region.end >= record_end),
+                (region.start >= record_end),
+                (region.end <= record_start),
+            ) {
+                (false, true, true, false) => {
+                    // [   ]   XXXXX
+                    // The record is fully outside the region.
+                    // Try the next record.
+                }
+                (true, false, false, true) => {
+                    // The record is fully outside the region.
+                    // XXXXX   [   ]
+                    // Any remaining records are after the region.
+                    return Err(Error::InvalidRegion);
+                }
+                (true, true, false, false) => {
+                    // **[XX]**
+                    // The record is fully contained in the region.
+                    if region.end == record_end {
+                        // **[XX]
+                        self.records[index].access = func(&self.records[index]);
+                        return self.merge();
+                    }
+                    // **[XX]XX
+
+                    if index + 1 == self.tail {
+                        // past last record
+                        return Err(Error::InvalidRegion);
+                    }
+
+                    if self.records[index + 1].region.start != record_end {
+                        // next record not contiguous
+                        return Err(Error::InvalidRegion);
+                    }
+
+                    self.records[index].access = func(&self.records[index]);
+                }
+                (false, false, false, false) => {
+                    // [   XXXXXX    ]
+                    // The record fully contains the region.
+                    let mut new_record = Record {
+                        region,
+                        access: self.records[index].access,
+                    };
+                    let old_access = self.records[index].access;
+                    new_record.access = func(&new_record);
+                    if new_record.access == old_access {
+                        return self.merge();
+                    }
+
+                    self.records[index] = new_record;
+
+                    let before = Record {
+                        region: Region::new(record_start, region.start),
+                        access: old_access,
+                    };
+                    let after = Record {
+                        region: Region::new(region.end, record_end),
+                        access: old_access,
+                    };
+
+                    // Any remaining records are after the region.
+                    self.insert(index + 1, after)?;
+                    self.insert(index, before)?;
+                    return self.merge();
+                }
+                (false, true, false, false) => {
+                    // [  XXX]XXXX
+                    if region.end > record_end {
+                        if index + 1 == self.tail {
+                            return Err(Error::InvalidRegion);
+                        }
+                        if self.records[index + 1].region.start != record_end {
+                            return Err(Error::InvalidRegion);
+                        }
+                    }
+
+                    let mut new_record = Record {
+                        region: Region::new(region.start, record_end),
+                        access: self.records[index].access,
+                    };
+
+                    let old_access = self.records[index].access;
+                    new_record.access = func(&new_record);
+                    if new_record.access != old_access {
+                        self.records[index] = new_record;
+
+                        let before = Record {
+                            region: Region::new(record_start, region.start),
+                            access: old_access,
+                        };
+
+                        self.insert(index, before)?;
+                        if region.end == record_end {
+                            return self.merge();
+                        }
+                        index += 1;
+                    }
+                }
+                (true, false, false, false) => {
+                    // XXX[XXXX   ]
+                    let mut new_record = Record {
+                        region: Region::new(record_start, region.end),
+                        access: self.records[index].access,
+                    };
+                    let old_access = self.records[index].access;
+                    new_record.access = func(&new_record);
+                    if new_record.access == old_access {
+                        return self.merge();
+                    }
+                    self.records[index] = new_record;
+
+                    let after = Record {
+                        region: Region::new(region.end, record_end),
+                        access: old_access,
+                    };
+                    // Any remaining records are after the region.
+                    self.insert(index + 1, after)?;
+                    return self.merge();
+                }
+                _ => unreachable!(
+                    "protect_with region {:#?} from {:#?}",
+                    region, self.records[index].region
+                ),
+            }
+
+            index += 1;
+        }
+        self.merge()
+    }
+
     /// Find the smallest address where a region of given size fits.
     pub fn find_free_front(&self, length: Offset<usize, Page>) -> Option<Address<usize, Page>> {
         if length.bytes() == 0 || length > (self.region.end - self.region.start) {
@@ -442,7 +594,7 @@ mod tests {
     }
 
     impl fmt::Display for Access {
-        fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        fn fmt(&self, f: &mut Formatter) -> fmt::Result {
             write!(
                 f,
                 "{}{}{}",
@@ -468,6 +620,7 @@ mod tests {
     const N: Access = Access::DEFAULT;
     const R: Access = Access::READ;
     const W: Access = Access::WRITE;
+    const X: Access = Access::EXECUTE;
 
     const FULL: Record<Access> = Record {
         region: Region::new(Address::new(0), Address::new(0x10000)),
@@ -791,6 +944,48 @@ mod tests {
     }
 
     #[rstest::rstest]
+    #[case(&[(0x8, 0x10, X)], &[(0x0, 0x8, R), (0x8, 0x10, X)], 1)]
+    #[case(&[(0x0, 0x8, X)], &[(0x0, 0x8, X), (0x8, 0x10, W)], 1)]
+    #[case(&[(0x8, 0x9, X)], &[(0x0, 0x8, R), (0x8, 0x9, X), (0x9, 0x10, W)], 1)]
+    #[case(&[(0x8, 0x9, X), (0x8, 0x10, X)], &[(0x0, 0x8, R), (0x8, 0x10, X)], 3)]
+    #[case(&[(0x7, 0x9, X)], &[(0x0, 0x7, R), (0x7, 0x9, X), (0x9, 0x10, W)], 2)]
+    #[case(&[(0x7, 0x9, X), (0x0, 0x10, X)], &[(0x0, 0x10, X)], 5)]
+    #[case(&[(0x2, 0x3, X)], &[(0x0, 0x2, R), (0x2, 0x3, X), (0x3, 0x8, R), (0x8, 0x10, W)], 1)]
+    #[case(&[(0x9, 0x10, X)], &[(0x0, 0x8, R), (0x8, 0x9, W), (0x9, 0x10, X)], 1)]
+    #[case(&[(0x8, 0x10, W)], &[(0x0, 0x8, R), (0x8, 0x10, W)], 1)]
+    #[case(&[(0x1, 0x2, R), (0x0, 0x10, X)], &[(0x0, 0x10, X)], 3)]
+    #[case(&[(0x7, 0x9, W)], &[(0x0, 0x7, R), (0x7, 0x10, W)], 2)]
+    #[case(&[(0x7, 0x9, R), (0x0, 0x10, R)], &[(0x0, 0x10, R)], 4)]
+    fn protect_mixed(
+        #[case] protects: &[(usize, usize, Access)],
+        #[case] expected: &[(usize, usize, Access)],
+        #[case] expected_protected: usize,
+    ) {
+        let protects = records_from_rstest(protects);
+        let expected = records_from_rstest(expected);
+
+        let mut ledger = MIXED_LEDGER.clone();
+        let mut protected = 0;
+
+        for record in protects {
+            let addr = record.region.start;
+            let length = record.region.end - record.region.start;
+            ledger
+                .protect_with(addr, length, |r| {
+                    protected += 1;
+                    println!("Protected {:#?} with access {:#?}", r, record.access);
+                    record.access
+                })
+                .unwrap();
+        }
+
+        println!("Result:");
+        println!("{:#?}", &ledger);
+        trace_assert_records_eq(ledger.records(), &expected);
+        assert_eq!(protected, expected_protected);
+    }
+
+    #[rstest::rstest]
     #[case(0x1, &[(0x3, 0x6, N), (0xa, 0xd, N)], &[(0x0, 0x1, N), (0x3, 0x6, N), (0xa, 0xd, N)])]
     #[case(0x2, &[(0x3, 0x6, N), (0xa, 0xd, N)], &[(0x0, 0x2, N), (0x3, 0x6, N), (0xa, 0xd, N)])]
     #[case(0x3, &[(0x3, 0x6, N), (0xa, 0xd, N)], &[(0x0, 0x6, N), (0xa, 0xd, N)])]
@@ -906,5 +1101,23 @@ mod tests {
         let addr = Address::new(0x10000);
         let length = Offset::from_items(1);
         assert!(ledger.contains(addr, length).is_none());
+    }
+
+    #[test]
+    fn ledger_protect_fails() {
+        let ledger_span: Span = Region::new(Address::new(0x0), Address::new(0x10000)).into();
+        let mut ledger = Ledger::<Access, 5>::new(ledger_span.start, ledger_span.count);
+
+        let region = Region::new(Address::new(0x1000), Address::new(0x2000));
+        let access = Access::READ;
+        let record = Record { region, access };
+        ledger.insert(0, record).unwrap();
+
+        let addr = Address::new(0x0);
+        let length = Offset::from_items(1);
+        assert_eq!(
+            ledger.protect_with(addr, length, |_| Access::WRITE),
+            Err(Error::InvalidRegion)
+        );
     }
 }
