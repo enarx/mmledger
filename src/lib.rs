@@ -316,57 +316,65 @@ impl<T: LedgerAccess, const N: usize> Ledger<T, N> {
             let record_start = self.records[index].region.start;
             let record_end = self.records[index].region.end;
 
-            if region.start >= record_end {
-                // Skip:
-                // [   ]   XXXXX
-                index += 1;
-                continue;
+            match (
+                (region.start <= record_start),
+                (region.end >= record_end),
+                (region.start >= record_end),
+                (region.end <= record_start),
+            ) {
+                (false, true, true, false) => {
+                    // [   ]   XXXXX
+                    // The record is fully outside the region.
+                    // Try the next record.
+                }
+                (true, false, false, true) => {
+                    // The record is fully outside the region.
+                    // XXXXX   [   ]
+                    // Any remaining records are after the region.
+                    return Ok(());
+                }
+
+                (true, true, false, false) => {
+                    // XX[XX]XX
+                    // The record is fully contained in the region.
+                    self.remove(index);
+                    // Jump without `index += 1` so that a left-shifted record will
+                    // not be skipped:
+                    continue;
+                }
+                (false, false, false, false) => {
+                    // [   XXXXXX    ]
+                    // The record fully contains the region.
+                    let before = Record {
+                        region: Region::new(record_start, region.start),
+                        access: self.records[index].access,
+                    };
+                    let after = Record {
+                        region: Region::new(region.end, record_end),
+                        access: self.records[index].access,
+                    };
+
+                    // Put `after` first because it will be right-shifted by `Self::commit()`.
+                    self.records[index] = after;
+
+                    // Any remaining records are after the region.
+                    return self.insert(index, before);
+                }
+                (false, true, false, false) => {
+                    // [  XXX]XXXX
+                    self.records[index].region.end = region.start;
+                }
+                (true, false, false, false) => {
+                    // XXX[XXXX   ]
+                    self.records[index].region.start = region.end;
+                    // Any remaining records are after the region.
+                    return Ok(());
+                }
+                _ => unreachable!(
+                    "unmap region {:#?} from {:#?}",
+                    region, self.records[index].region
+                ),
             }
-
-            if region.end <= record_start {
-                // Skip:
-                // XXXXX   [   ]
-
-                // Any remaining records are after the region.
-                return Ok(());
-            }
-
-            if region.start <= record_start && region.end >= record_end {
-                // XX[XX]XX
-                self.remove(index);
-                // Jump without `index += 1` so that a left-shifted record will
-                // not be skipped:
-                continue;
-            }
-
-            if region.start > record_start && region.end < record_end {
-                // [   XXXXXX    ]
-                let before = Record {
-                    region: Region::new(record_start, region.start),
-                    access: self.records[index].access,
-                };
-                let after = Record {
-                    region: Region::new(region.end, record_end),
-                    access: self.records[index].access,
-                };
-
-                // Put `after` first because it will be right-shifted by `Self::commit()`.
-                self.records[index] = after;
-
-                // Any remaining records are after the region.
-                return self.insert(index, before);
-            }
-
-            if region.start > record_start {
-                // [  XXX]XXXX
-                self.records[index].region.end = region.start;
-            } else {
-                // XXX[XXXX   ]
-                self.records[index].region.start = region.end;
-                // Any remaining records are after the region.
-                return Ok(());
-            }
-
             index += 1;
         }
 
