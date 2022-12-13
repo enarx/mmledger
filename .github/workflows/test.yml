@@ -1,5 +1,11 @@
-on: [push, pull_request]
 name: test
+
+on: [push, pull_request]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     name: ${{ matrix.toolchain }} (${{ matrix.profile.name }})
@@ -21,7 +27,7 @@ jobs:
           - nightly
           - beta
           - stable
-          - 1.57.0
+          - 1.60.0
         profile:
           - name: debug
           - name: release
