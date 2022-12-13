@@ -1,0 +1,46 @@
+name: coverage
+
+on: [push, pull_request]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  coverage:
+    name: coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - uses: actions-rs/toolchain@v1
+        with:
+          components: llvm-tools-preview
+          toolchain: stable
+          override: true
+
+      - name: Install lcov
+        run: |
+          sudo apt -o Acquire::Retries=3 update
+          sudo apt -o Acquire::Retries=3 install -y lcov
+
+      - name: Install cargo-llvm-cov
+        run: >
+          curl -LsSf 'https://github.com/taiki-e/cargo-llvm-cov/releases/download/v0.5.2/cargo-llvm-cov-x86_64-unknown-linux-musl.tar.gz'
+          | tar xzf -
+          && mv cargo-llvm-cov $HOME/.cargo/bin
+
+      - name: Run cargo-llvm-cov
+        run: cargo llvm-cov --lcov --output-path lcov.info
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v3
+        with:
+          directory: ./
+          files: ./lcov.info
+          fail_ci_if_error: false
+          verbose: true
+
