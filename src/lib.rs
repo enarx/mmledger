@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! A ledger for memory mappings.
-
+#![doc = include_str!("../README.md")]
 #![cfg_attr(not(test), no_std)]
 #![deny(clippy::all)]
 #![deny(missing_docs)]
