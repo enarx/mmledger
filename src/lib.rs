@@ -48,8 +48,11 @@ impl<T: LedgerAccess> ConstDefault for Record<T> {
 }
 
 /// Ledger error conditions.
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum Error {
+    /// Invalid region.
+    InvalidRegion,
+
     /// Out of storage capacity
     OutOfCapacity,
 
@@ -91,8 +94,12 @@ impl<T: LedgerAccess, const N: usize> Ledger<T, N> {
     /// Insert a record at the index, shifting later records right.
     fn insert(&mut self, index: usize, record: Record<T>) -> Result<(), Error> {
         assert!(self.tail <= self.records.len());
-        assert!(self.tail == self.records().len());
+        assert_eq!(self.tail, self.records().len());
         assert!(self.tail >= index);
+
+        if self.region.end < record.region.end || self.region.start > record.region.start {
+            return Err(Error::InvalidRegion);
+        }
 
         if self.tail == self.records.len() {
             return Err(Error::OutOfCapacity);
@@ -845,5 +852,59 @@ mod tests {
         use core::mem::{align_of, size_of};
         assert_eq!(size_of::<Record<Access>>(), size_of::<usize>() * 4);
         assert_eq!(align_of::<Record<Access>>(), size_of::<Record<Access>>());
+    }
+
+    #[test]
+    fn ledger_insert_out_of_bounds() {
+        let mut ledger = EMPTY_LEDGER.clone();
+        let addr = ledger.region.end;
+        let length = Offset::from_items(1);
+        let region = Region::new(addr, addr + length);
+        let record = Record {
+            region,
+            access: Access::empty(),
+        };
+        assert_eq!(ledger.insert(0, record), Err(Error::InvalidRegion));
+    }
+
+    #[test]
+    fn ledger_insert_out_of_index() {
+        const SINGLE_RECORD_LEDGER: Ledger<Access, 1> = Ledger {
+            records: [FULL],
+            region: Region::new(Address::new(0x0000), Address::new(0x10000)),
+            tail: 1,
+        };
+
+        let mut ledger = SINGLE_RECORD_LEDGER.clone();
+        let addr = ledger.region.start;
+        let length = Offset::from_items(1);
+        let region = Region::new(addr, addr + length);
+        let record = Record {
+            region,
+            access: Access::empty(),
+        };
+        assert_eq!(ledger.insert(1, record), Err(Error::OutOfCapacity));
+    }
+
+    #[test]
+    fn ledger_contains() {
+        let mut ledger = EMPTY_LEDGER.clone();
+        let addr = Address::new(0x1000);
+        let length = Offset::from_items(2);
+        let region = Region::new(addr, addr + length);
+        let record = Record {
+            region,
+            access: Access::empty(),
+        };
+        ledger.insert(0, record).unwrap();
+
+        let addr = Address::new(0x1000);
+        let length = Offset::from_items(1);
+        assert!(ledger.contains(addr, length).is_some());
+        assert!(ledger.contains(addr + length, length).is_some());
+        assert!(ledger.contains(addr - length, length).is_none());
+        let addr = Address::new(0x10000);
+        let length = Offset::from_items(1);
+        assert!(ledger.contains(addr, length).is_none());
     }
 }
