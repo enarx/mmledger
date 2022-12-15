@@ -122,6 +122,12 @@ impl<T: LedgerAccess, const N: usize> Ledger<T, N> {
         }
     }
 
+    /// Check if a region is covered by the ledger.
+    pub fn valid(&self, addr: Address<usize, Page>, length: Offset<usize, Page>) -> bool {
+        let region: Region = Span::new(addr, length).into();
+        self.region.contains(&region)
+    }
+
     /// Check whether the ledger contains the given region, and return the
     /// maximum allowed access for it. Any empty space will result `None`.
     pub fn contains(&self, addr: Address<usize, Page>, length: Offset<usize, Page>) -> Option<T> {
@@ -1119,5 +1125,13 @@ mod tests {
             ledger.protect_with(addr, length, |_| Access::WRITE),
             Err(Error::InvalidRegion)
         );
+    }
+
+    #[test]
+    fn ledger_valid() {
+        let ledger = Ledger::<Access, 1>::new(Address::new(0x0), Offset::from_items(10));
+        assert!(ledger.valid(Address::new(0x0), Offset::from_items(1)));
+        assert!(ledger.valid(Address::new(0x9000), Offset::from_items(1)));
+        assert!(!ledger.valid(Address::new(0x10000), Offset::from_items(1)));
     }
 }
