@@ -16,4 +16,4 @@ primordial = "0.5.0"
 const-default = "1.0.0"
 
 [dev-dependencies]
-rstest = "0.16.0"
+rstest = "0.17.0"
